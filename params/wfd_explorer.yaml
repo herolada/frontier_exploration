@@ -1,0 +1,38 @@
+/**:
+  ros__parameters:
+    # ── Topics / frames ──────────────────────────────────────────────────
+    map_topic: "/map"
+    robot_frame: "base_link"
+    nav2_action: "navigate_to_pose"
+
+    # ── Timing ───────────────────────────────────────────────────────────
+    loop_rate_hz: 1.0          # main exploration loop frequency (Hz)
+    map_timeout_s: 5.0         # seconds to wait for a fresh map message
+    nav_goal_timeout_s: 60.0   # per-goal navigation timeout (seconds)
+    tf_timeout_s: 1.0          # TF lookup timeout (seconds)
+
+    # ── Visualisation ────────────────────────────────────────────────────
+    publish_markers: true
+    marker_topic: "~/frontiers"
+
+    # ── WFD parameters ───────────────────────────────────────────────────
+    wfd:
+      # Occupancy-grid thresholding
+      # raw value < free_threshold            → TRAVERSABLE
+      # raw value >= free_threshold            → OBSTACLE  (conservative)
+      # raw value == -1                        → UNEXPLORED
+      free_threshold: 50
+      occ_threshold: 65         # kept for reference; currently any val >= free_threshold is obstacle
+
+      # Frontier filtering
+      min_frontier_size: 3      # minimum frontier cells to consider (filters noise)
+
+      # A frontier whose spatial extent exceeds this value (metres) is split
+      # into sub-frontiers of at most this size
+      max_frontier_split_size: 1.5   # metres
+
+      # Goal selection: score = lambda * norm_info^exponent - (1-lambda) * norm_dist
+      # lambda = 1.0  → pure information gain (greedy)
+      # lambda = 0.0  → nearest frontier
+      lambda: 0.5
+      info_gain_exponent: 1.0
