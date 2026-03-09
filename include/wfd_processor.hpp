@@ -1,7 +1,7 @@
 #pragma once
 
-#include "wfd_explorer/wfd_types.hpp"
-#include "wfd_explorer/logger.hpp"
+#include "wfd_types.hpp"
+#include "ros_logger.hpp"
 
 #include <vector>
 #include <optional>
@@ -52,13 +52,13 @@ public:
    */
   std::vector<Frontier> detect(
     const OccupancyGrid & grid,
-    const Point2D & robot_pos);
+    const Pose2D & robot_pos);
 
   /**
    * @brief Select the best frontier given robot position.
    *
    * Scores each frontier as:
-   *   score = lambda * norm_info_gain^exponent - (1-lambda) * norm_distance
+   *   score = w[0] * norm_info_gain^exponent + w[1] * norm_distance + w[2] * norm_yaw_diff
    *
    * @param frontiers detected frontiers
    * @param robot_pos robot world position
@@ -66,7 +66,7 @@ public:
    */
   std::optional<Frontier> selectBest(
     std::vector<Frontier> & frontiers,
-    const Point2D & robot_pos);
+    const Pose2D & robot_pos);
 
   void updateParams(const WFDParams & params) { params_ = params; }
   const WFDParams & params() const { return params_; }
@@ -80,7 +80,7 @@ private:
 
   /** BFS to collect all cells reachable from (start_col, start_row) that
    *  also satisfy isFrontierCell.  Returns world positions of the component. */
-  std::vector<Point2D> bfsFrontierComponent(
+  std::vector<Pose2D> bfsFrontierComponent(
     const OccupancyGrid & grid,
     int start_col, int start_row,
     std::vector<bool> & visited_frontier) const;
@@ -90,7 +90,7 @@ private:
   std::vector<Frontier> splitFrontier(const Frontier & f) const;
 
   /** Compute centroid of a list of points. */
-  static Point2D centroid(const std::vector<Point2D> & pts);
+  static Pose2D centroid(const std::vector<Pose2D> & pts);
 
   // 4-connected neighbour offsets (dx, dy)
   static constexpr int kDx[4] = {1, -1, 0,  0};

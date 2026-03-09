@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cmath>
 #include <limits>
+#include <string>
 
 namespace wfd
 {
@@ -19,12 +20,13 @@ enum class CellState : uint8_t
   UNEXPLORED  = 2
 };
 
-struct Point2D
+struct Pose2D
 {
   double x{0.0};
   double y{0.0};
+  double yaw{0.0};
 
-  double distanceTo(const Point2D & other) const
+  double distanceTo(const Pose2D & other) const
   {
     const double dx = x - other.x;
     const double dy = y - other.y;
@@ -58,7 +60,7 @@ struct OccupancyGrid
     return cells[static_cast<size_t>(index(col, row))];
   }
 
-  Point2D cellToWorld(int col, int row) const
+  Pose2D cellToWorld(int col, int row) const
   {
     return {origin_x + (col + 0.5) * resolution,
             origin_y + (row + 0.5) * resolution};
@@ -78,8 +80,8 @@ struct OccupancyGrid
 
 struct Frontier
 {
-  std::vector<Point2D> cells;   // individual frontier cell world positions
-  Point2D centroid;
+  std::vector<Pose2D> cells;   // individual frontier cell world positions
+  Pose2D centroid;
   double size{0.0};             // number of cells (used as info-gain proxy)
   double score{0.0};            // exploration score
 };
@@ -100,7 +102,7 @@ struct WFDParams
   double max_frontier_split_size{1.5}; // split frontiers whose extent (m) exceeds this
 
   // Goal selection
-  double lambda{0.5};           // weight: score = lambda * info_gain - (1-lambda) * distance
+  std::vector<double> weights{0., 1., 0.5}; // weight: score = w[0] * norm_info_gain^exponent + w[1] * norm_distance + w[2] * norm_yaw_diff
                                 //  info_gain normalised by max, distance normalised by max
   double info_gain_exponent{1.0}; // raise info_gain to this power before scoring
 };

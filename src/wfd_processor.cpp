@@ -1,4 +1,4 @@
-#include "wfd_explorer/wfd_processor.hpp"
+#include "wfd_processor.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -74,12 +74,12 @@ bool WFDProcessor::isFrontierCell(const OccupancyGrid & grid, int col, int row) 
 // ============================================================
 //  bfsFrontierComponent
 // ============================================================
-std::vector<Point2D> WFDProcessor::bfsFrontierComponent(
+std::vector<Pose2D> WFDProcessor::bfsFrontierComponent(
   const OccupancyGrid & grid,
   int start_col, int start_row,
   std::vector<bool> & visited_frontier) const
 {
-  std::vector<Point2D> component;
+  std::vector<Pose2D> component;
   std::queue<std::pair<int,int>> q;
 
   auto idx = [&](int c, int r){ return r * grid.width + c; };
@@ -110,9 +110,9 @@ std::vector<Point2D> WFDProcessor::bfsFrontierComponent(
 // ============================================================
 //  centroid
 // ============================================================
-Point2D WFDProcessor::centroid(const std::vector<Point2D> & pts)
+Pose2D WFDProcessor::centroid(const std::vector<Pose2D> & pts)
 {
-  Point2D c{0.0, 0.0};
+  Pose2D c{0.0, 0.0, 0.0};
   if (pts.empty()) return c;
   for (const auto & p : pts) { c.x += p.x; c.y += p.y; }
   c.x /= static_cast<double>(pts.size());
@@ -174,7 +174,7 @@ std::vector<Frontier> WFDProcessor::splitFrontier(const Frontier & f) const
 // ============================================================
 std::vector<Frontier> WFDProcessor::detect(
   const OccupancyGrid & grid,
-  const Point2D & robot_pos)
+  const Pose2D & robot_pos)
 {
   if (!grid.valid()) {
     logger_.warn("WFD: received invalid grid, skipping");
@@ -229,27 +229,32 @@ std::vector<Frontier> WFDProcessor::detect(
 // ============================================================
 std::optional<Frontier> WFDProcessor::selectBest(
   std::vector<Frontier> & frontiers,
-  const Point2D & robot_pos)
+  const Pose2D & robot_pos)
 {
   if (frontiers.empty()) return std::nullopt;
 
   // Normalisation factors
   double max_info = 0.0;
   double max_dist = 0.0;
+  double max_yaw_diff = 0.0;
   for (const auto & f : frontiers) {
-    max_info = std::max(max_info, f.size);
+    max_info = std::max(max_info, f.size); // TODO replace this with something better than information gain == number of frontire cells connected to this component.
     max_dist = std::max(max_dist, robot_pos.distanceTo(f.centroid));
-  }
+    max_yaw_diff = std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw);
+  }  
+  
   if (max_info < 1e-9) max_info = 1.0;
   if (max_dist < 1e-9) max_dist = 1.0;
+  if (max_yaw_diff < 1e-9) max_yaw_diff = 1.0;
 
-  const double lam = params_.lambda;
+  const std::vector<double> w = params_.weights;
   const double exp = params_.info_gain_exponent;
 
   for (auto & f : frontiers) {
     double norm_info = std::pow(f.size / max_info, exp);
     double norm_dist = robot_pos.distanceTo(f.centroid) / max_dist;
-    f.score = lam * norm_info - (1.0 - lam) * norm_dist;
+    double norm_yaw_diff = std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw) / max_yaw_diff;
+    f.score = w[0] * norm_info + w[1] * norm_dist + w[2] * norm_yaw_diff;
   }
 
   // Log all frontier scores

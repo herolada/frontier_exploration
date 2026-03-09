@@ -1,8 +1,8 @@
 #pragma once
 
-#include "wfd_explorer/logger.hpp"
-#include "wfd_explorer/wfd_types.hpp"
-#include "wfd_explorer/wfd_processor.hpp"
+#include "ros_logger.hpp"
+#include "wfd_types.hpp"
+#include "wfd_processor.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
@@ -20,7 +20,7 @@
 #include <string>
 #include <thread>
 
-namespace wfd_explorer
+namespace frontier_exploration
 {
 
 struct ExplorerParams
@@ -88,14 +88,14 @@ private:
    * @brief Send a NavigateToPose goal and block until completion or timeout.
    * @return true if goal succeeded, false otherwise.
    */
-  bool navigateTo(const wfd::Point2D & goal, const std::string & map_frame);
+  bool navigateTo(const wfd::Pose2D & goal, const std::string & map_frame);
 
   // -----------------------------------------------------------------------
   // TF helpers
   // -----------------------------------------------------------------------
 
   /** Get robot position in the map frame. Returns nullopt on failure. */
-  std::optional<wfd::Point2D> getRobotPosition(const std::string & map_frame);
+  std::optional<wfd::Pose2D> getRobotPosition(const std::string & map_frame);
 
   // -----------------------------------------------------------------------
   // Visualisation
@@ -143,4 +143,4 @@ private:
   std::atomic<bool> running_{false};
 };
 
-}  // namespace wfd_explorer
+}  // namespace frontier_exploration

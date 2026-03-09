@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(wfd_explorer)
+project(frontier_exploration)
 
 # -------------------------------------------------------------------------
 # Compiler settings
@@ -24,7 +24,7 @@ find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
-find_package(fmt REQUIRED)
+# find_package(fmt REQUIRED)
 
 # -------------------------------------------------------------------------
 # Core (ROS-free) library
@@ -43,7 +43,7 @@ target_include_directories(wfd_core
 ament_target_dependencies(wfd_core
   rclcpp   # for rclcpp/logging.hpp used in logger.hpp
 )
-target_link_libraries(wfd_core fmt::fmt)
+# target_link_libraries(wfd_core fmt::fmt)
 
 # -------------------------------------------------------------------------
 # ROS interface library
@@ -70,28 +70,28 @@ ament_target_dependencies(wfd_ros_interface
   tf2_geometry_msgs
 )
 
-target_link_libraries(wfd_ros_interface wfd_core fmt::fmt)
+# target_link_libraries(wfd_ros_interface wfd_core fmt::fmt)
 
 # -------------------------------------------------------------------------
 # Executable
 # -------------------------------------------------------------------------
-add_executable(wfd_explorer_node src/main.cpp)
+add_executable(frontier_exploration_node src/main.cpp)
 
-target_include_directories(wfd_explorer_node
+target_include_directories(frontier_exploration_node
   PRIVATE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 
-target_link_libraries(wfd_explorer_node wfd_ros_interface wfd_core fmt::fmt)
+target_link_libraries(frontier_exploration_node wfd_ros_interface wfd_core)# fmt::fmt)
 
-ament_target_dependencies(wfd_explorer_node
+ament_target_dependencies(frontier_exploration_node
   rclcpp
 )
 
 # -------------------------------------------------------------------------
 # Install
 # -------------------------------------------------------------------------
-install(TARGETS wfd_explorer_node wfd_core wfd_ros_interface
+install(TARGETS frontier_exploration_node wfd_core wfd_ros_interface
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -101,7 +101,7 @@ install(DIRECTORY include/
   DESTINATION include
 )
 
-install(DIRECTORY launch config
+install(DIRECTORY launch params
   DESTINATION share/${PROJECT_NAME}
 )
 

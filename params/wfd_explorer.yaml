@@ -31,8 +31,6 @@
       # into sub-frontiers of at most this size
       max_frontier_split_size: 1.5   # metres
 
-      # Goal selection: score = lambda * norm_info^exponent - (1-lambda) * norm_dist
-      # lambda = 1.0  → pure information gain (greedy)
-      # lambda = 0.0  → nearest frontier
-      lambda: 0.5
+      # Goal selection: score = w[0] * norm_info_gain^exponent + w[1] * norm_distance + w[2] * norm_yaw_diff
+      weights: [0., 1., 0.5]
       info_gain_exponent: 1.0

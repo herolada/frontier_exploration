@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>wfd_explorer</name>
+  <name>frontier_exploration</name>
   <version>0.1.0</version>
   <description>
     Autonomous exploration using Wavefront Frontier Detection (WFD).
@@ -28,7 +28,7 @@
   <depend>tf2_geometry_msgs</depend>
 
   <!-- fmt for structured logging -->
-  <depend>libfmt-dev</depend>
+  <!-- <depend>libfmt-dev</depend> -->
 
   <!-- Launch / test -->
   <exec_depend>ros2launch</exec_depend>

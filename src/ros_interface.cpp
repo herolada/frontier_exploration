@@ -1,5 +1,6 @@
-#include "wfd_explorer/ros_interface.hpp"
+#include "ros_interface.hpp"
 
+#include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <visualization_msgs/msg/marker.hpp>
@@ -10,7 +11,7 @@
 
 using namespace std::chrono_literals;
 
-namespace wfd_explorer
+namespace frontier_exploration
 {
 
 // ============================================================
@@ -91,23 +92,22 @@ ExplorerParams ROSInterface::loadParams()
 {
   ExplorerParams p;
 
-  auto & n = *node_;
-  p.map_topic        = n.declare_parameter("map_topic",        p.map_topic);
-  p.robot_frame      = n.declare_parameter("robot_frame",      p.robot_frame);
-  p.nav2_action      = n.declare_parameter("nav2_action",      p.nav2_action);
-  p.loop_rate_hz     = n.declare_parameter("loop_rate_hz",     p.loop_rate_hz);
-  p.map_timeout_s    = n.declare_parameter("map_timeout_s",    p.map_timeout_s);
-  p.nav_goal_timeout_s = n.declare_parameter("nav_goal_timeout_s", p.nav_goal_timeout_s);
-  p.tf_timeout_s     = n.declare_parameter("tf_timeout_s",     p.tf_timeout_s);
-  p.publish_markers  = n.declare_parameter("publish_markers",  p.publish_markers);
-  p.marker_topic     = n.declare_parameter("marker_topic",     p.marker_topic);
+  p.map_topic        = node_->declare_parameter("map_topic",        p.map_topic);
+  p.robot_frame      = node_->declare_parameter("robot_frame",      p.robot_frame);
+  p.nav2_action      = node_->declare_parameter("nav2_action",      p.nav2_action);
+  p.loop_rate_hz     = node_->declare_parameter("loop_rate_hz",     p.loop_rate_hz);
+  p.map_timeout_s    = node_->declare_parameter("map_timeout_s",    p.map_timeout_s);
+  p.nav_goal_timeout_s = node_->declare_parameter("nav_goal_timeout_s", p.nav_goal_timeout_s);
+  p.tf_timeout_s     = node_->declare_parameter("tf_timeout_s",     p.tf_timeout_s);
+  p.publish_markers  = node_->declare_parameter("publish_markers",  p.publish_markers);
+  p.marker_topic     = node_->declare_parameter("marker_topic",     p.marker_topic);
 
-  p.wfd.free_threshold          = n.declare_parameter("wfd.free_threshold",          p.wfd.free_threshold);
-  p.wfd.occ_threshold           = n.declare_parameter("wfd.occ_threshold",           p.wfd.occ_threshold);
-  p.wfd.min_frontier_size       = n.declare_parameter("wfd.min_frontier_size",       p.wfd.min_frontier_size);
-  p.wfd.max_frontier_split_size = n.declare_parameter("wfd.max_frontier_split_size", p.wfd.max_frontier_split_size);
-  p.wfd.lambda                  = n.declare_parameter("wfd.lambda",                  p.wfd.lambda);
-  p.wfd.info_gain_exponent      = n.declare_parameter("wfd.info_gain_exponent",      p.wfd.info_gain_exponent);
+  p.wfd.free_threshold          = node_->declare_parameter("wfd.free_threshold",          p.wfd.free_threshold);
+  p.wfd.occ_threshold           = node_->declare_parameter("wfd.occ_threshold",           p.wfd.occ_threshold);
+  p.wfd.min_frontier_size       = node_->declare_parameter("wfd.min_frontier_size",       p.wfd.min_frontier_size);
+  p.wfd.max_frontier_split_size = node_->declare_parameter("wfd.max_frontier_split_size", p.wfd.max_frontier_split_size);
+  p.wfd.weights                  = node_->declare_parameter("wfd.weights",                  p.wfd.weights);
+  p.wfd.info_gain_exponent      = node_->declare_parameter("wfd.info_gain_exponent",      p.wfd.info_gain_exponent);
 
   return p;
 }
@@ -115,15 +115,19 @@ ExplorerParams ROSInterface::loadParams()
 // ============================================================
 //  getRobotPosition
 // ============================================================
-std::optional<wfd::Point2D> ROSInterface::getRobotPosition(const std::string & map_frame)
+std::optional<wfd::Pose2D> ROSInterface::getRobotPosition(const std::string & map_frame)
 {
   try {
     auto tf = tf_buffer_->lookupTransform(
       map_frame, params_.robot_frame, tf2::TimePointZero,
       tf2::durationFromSec(params_.tf_timeout_s));
-    wfd::Point2D pos;
+    wfd::Pose2D pos;
     pos.x = tf.transform.translation.x;
     pos.y = tf.transform.translation.y;
+
+    double yaw = tf2::getYaw(tf.transform.rotation);
+    pos.yaw = yaw;
+
     return pos;
   } catch (const tf2::TransformException & ex) {
     logger_.warn("TF lookup failed: {}", ex.what());
@@ -134,7 +138,7 @@ std::optional<wfd::Point2D> ROSInterface::getRobotPosition(const std::string & m
 // ============================================================
 //  navigateTo
 // ============================================================
-bool ROSInterface::navigateTo(const wfd::Point2D & goal, const std::string & map_frame)
+bool ROSInterface::navigateTo(const wfd::Pose2D & goal, const std::string & map_frame)
 {
   if (!nav_client_->wait_for_action_server(2s)) {
     logger_.error("Nav2 action server '{}' not available", params_.nav2_action);
@@ -147,6 +151,9 @@ bool ROSInterface::navigateTo(const wfd::Point2D & goal, const std::string & map
   goal_msg.pose.pose.position.x = goal.x;
   goal_msg.pose.pose.position.y = goal.y;
   goal_msg.pose.pose.position.z = 0.0;
+  goal_msg.pose.pose.orientation.x = 0.0;  
+  goal_msg.pose.pose.orientation.y = 0.0;  
+  goal_msg.pose.pose.orientation.z = 0.0;  
   goal_msg.pose.pose.orientation.w = 1.0;  // yaw = 0, nav2 will handle orientation
 
   logger_.info("Sending nav goal: ({:.2f}, {:.2f}) in '{}'", goal.x, goal.y, map_frame);
@@ -336,10 +343,10 @@ void ROSInterface::explorationLoop()
       std::this_thread::sleep_for(std::chrono::duration<double>(1.0));
       continue;
     }
-    wfd::Point2D robot_pos = *robot_pos_opt;
+    wfd::Pose2D robot_pos = *robot_pos_opt;
 
-    logger_.info("Robot position: ({:.2f}, {:.2f}) in '{}'",
-      robot_pos.x, robot_pos.y, map_frame);
+    logger_.info("Robot position: (x {:.2f}, y {:.2f}, yaw {:.2f}) in '{}'",
+      robot_pos.x, robot_pos.y, robot_pos.yaw, map_frame);
 
     // ------------------------------------------------------------------
     // 4. Run WFD
@@ -386,4 +393,4 @@ void ROSInterface::explorationLoop()
   logger_.info("Exploration loop finished");
 }
 
-}  // namespace wfd_explorer
+}  // namespace frontier_exploration
