@@ -28,9 +28,11 @@
       min_frontier_size: 3      # minimum frontier cells to consider (filters noise)
       min_frontier_dist: 3.0      # minimum frontier cells to consider (filters noise)
 
-      # A frontier whose spatial extent exceeds this value (metres) is split
-      # into sub-frontiers of at most this size
-      max_frontier_split_size: 1.5   # metres
+      # Frontier splitting via k-means.
+      # n_r = 1 + floor( f / (1.8 * D) + 0.5 )
+      # where f = frontier cell count, D = sensor_range (metres).
+      sensor_range: 5.0         # sensor range D in metres (e.g. lidar max range)
+      kmeans_max_iter: 100      # k-means iteration cap
 
       # Goal selection: score = w[0] * norm_info_gain^exponent + w[1] * norm_distance + w[2] * norm_yaw_diff
       weights: [0., 1., 3.0]

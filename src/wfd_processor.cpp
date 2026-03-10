@@ -121,52 +121,95 @@ Pose2D WFDProcessor::centroid(const std::vector<Pose2D> & pts)
 }
 
 // ============================================================
-//  splitFrontier
+//  splitFrontierKMeans
 // ============================================================
-std::vector<Frontier> WFDProcessor::splitFrontier(const Frontier & f) const
+std::vector<Frontier> WFDProcessor::splitFrontierKMeans(const Frontier & f)
 {
-  // Compute spatial extent along each axis
-  double min_x = f.cells[0].x, max_x = f.cells[0].x;
-  double min_y = f.cells[0].y, max_y = f.cells[0].y;
-  for (const auto & p : f.cells) {
-    min_x = std::min(min_x, p.x); max_x = std::max(max_x, p.x);
-    min_y = std::min(min_y, p.y); max_y = std::max(max_y, p.y);
-  }
+  const std::size_t n_cells = f.cells.size();
 
-  const double extent_x = max_x - min_x;
-  const double extent_y = max_y - min_y;
-  const double max_extent = std::max(extent_x, extent_y);
+  // ── 1. Compute number of clusters ──────────────────────────────────────
+  // n_r = 1 + floor( f / (1.8 * D) + 0.5 )
+  // D is sensor_range in cells = sensor_range_m / resolution.
+  // We store sensor_range in metres in params; the frontier cells are already
+  // in world (metre) coordinates, so we derive D_m = sensor_range directly.
+  const double D_m  = params_.sensor_range;              // metres
+  const double f_d  = static_cast<double>(n_cells);
+  const int    n_r  = 1 + static_cast<int>(std::floor(f_d / (1.8 * D_m) + 0.5));
 
-  if (max_extent <= params_.max_frontier_split_size) {
+  logger_.info("KMeans split: {} cells, D={:.1f} m → {} cluster(s)", n_cells, D_m, n_r);
+
+  if (n_r <= 1) {
     return {f};  // no split needed
   }
 
-  // Number of segments along the dominant axis
-  int n_segs = static_cast<int>(std::ceil(max_extent / params_.max_frontier_split_size));
-  n_segs = std::max(n_segs, 2);
-
-  std::vector<Frontier> result(static_cast<size_t>(n_segs));
-
-  // Partition cells by position along dominant axis
-  bool split_x = extent_x >= extent_y;
-  for (const auto & p : f.cells) {
-    double coord  = split_x ? (p.x - min_x) : (p.y - min_y);
-    double extent = split_x ? extent_x : extent_y;
-    int seg = static_cast<int>(coord / extent * static_cast<double>(n_segs));
-    seg = std::clamp(seg, 0, n_segs - 1);
-    result[static_cast<size_t>(seg)].cells.push_back(p);
+  // ── 2. Seed initialisation ─────────────────────────────────────────────
+  // Evenly-spaced indices into the BFS-ordered cell list give spatially
+  // spread seeds without an extra distance pass.
+  std::vector<Pose2D> means(static_cast<std::size_t>(n_r));
+  for (int k = 0; k < n_r; ++k) {
+    std::size_t idx = static_cast<std::size_t>(
+      static_cast<double>(k) / static_cast<double>(n_r) * static_cast<double>(n_cells));
+    idx = std::min(idx, n_cells - 1);
+    means[static_cast<std::size_t>(k)] = f.cells[idx];
   }
 
-  // Remove empty segments and compute centroids / sizes
-  std::vector<Frontier> pruned;
-  pruned.reserve(static_cast<size_t>(n_segs));
-  for (auto & seg : result) {
-    if (static_cast<int>(seg.cells.size()) < params_.min_frontier_size) continue;
+  // ── 3. K-means iterations ──────────────────────────────────────────────
+  std::vector<int> labels(n_cells, 0);
+
+  for (int iter = 0; iter < params_.kmeans_max_iter; ++iter) {
+    // Assignment step
+    bool changed = false;
+    for (std::size_t i = 0; i < n_cells; ++i) {
+      double best_dist = std::numeric_limits<double>::max();
+      int    best_k    = 0;
+      for (int k = 0; k < n_r; ++k) {
+        double d = f.cells[i].distanceTo(means[static_cast<std::size_t>(k)]);
+        if (d < best_dist) { best_dist = d; best_k = k; }
+      }
+      if (labels[i] != best_k) { labels[i] = best_k; changed = true; }
+    }
+
+    // Update step
+    std::vector<Pose2D>    sums(static_cast<std::size_t>(n_r), {0.0, 0.0, 0.0});
+    std::vector<std::size_t> counts(static_cast<std::size_t>(n_r), 0);
+    for (std::size_t i = 0; i < n_cells; ++i) {
+      std::size_t k = static_cast<std::size_t>(labels[i]);
+      sums[k].x += f.cells[i].x;
+      sums[k].y += f.cells[i].y;
+      ++counts[k];
+    }
+    for (int k = 0; k < n_r; ++k) {
+      std::size_t sk = static_cast<std::size_t>(k);
+      if (counts[sk] > 0) {
+        means[sk].x = sums[sk].x / static_cast<double>(counts[sk]);
+        means[sk].y = sums[sk].y / static_cast<double>(counts[sk]);
+      }
+    }
+
+    if (!changed) {
+      logger_.info("KMeans converged after {} iteration(s)", iter + 1);
+      break;
+    }
+  }
+
+  // ── 4. Build output Frontier objects ───────────────────────────────────
+  std::vector<std::vector<Pose2D>> clusters(static_cast<std::size_t>(n_r));
+  for (std::size_t i = 0; i < n_cells; ++i) {
+    clusters[static_cast<std::size_t>(labels[i])].push_back(f.cells[i]);
+  }
+
+  std::vector<Frontier> result;
+  result.reserve(static_cast<std::size_t>(n_r));
+  for (int k = 0; k < n_r; ++k) {
+    auto & cl = clusters[static_cast<std::size_t>(k)];
+    if (static_cast<int>(cl.size()) < params_.min_frontier_size) continue;
+    Frontier seg;
+    seg.cells    = std::move(cl);
     seg.centroid = centroid(seg.cells);
     seg.size     = static_cast<double>(seg.cells.size());
-    pruned.push_back(std::move(seg));
+    result.push_back(std::move(seg));
   }
-  return pruned;
+  return result;
 }
 
 // ============================================================
@@ -206,8 +249,8 @@ std::vector<Frontier> WFDProcessor::detect(
       f.centroid = centroid(f.cells);
       f.size     = static_cast<double>(f.cells.size());
 
-      // Split large frontiers
-      auto parts = splitFrontier(f);
+      // Split via k-means (n_r formula)
+      auto parts = splitFrontierKMeans(f);
       for (auto & part : parts) {
         frontiers.push_back(std::move(part));
       }

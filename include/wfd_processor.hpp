@@ -85,9 +85,17 @@ private:
     int start_col, int start_row,
     std::vector<bool> & visited_frontier) const;
 
-  /** Split a frontier that is spatially large into sub-frontiers by
-   *  k-means-style partitioning along the principal axis. */
-  std::vector<Frontier> splitFrontier(const Frontier & f) const;
+  /**
+   * @brief Split a frontier component into sub-frontiers using k-means.
+   *
+   * Number of clusters:  n_r = 1 + floor( f / (1.8 * D) + 0.5 )
+   * where f = number of frontier cells, D = sensor_range converted to cells.
+   * Returns the frontier unchanged when n_r == 1.
+   *
+   * Seeds are chosen as evenly-spaced indices into the BFS-ordered cell list,
+   * giving good spatial spread without a separate distance computation pass.
+   */
+  std::vector<Frontier> splitFrontierKMeans(const Frontier & f);
 
   /** Compute centroid of a list of points. */
   static Pose2D centroid(const std::vector<Pose2D> & pts);

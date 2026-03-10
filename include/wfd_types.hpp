@@ -98,8 +98,17 @@ struct WFDParams
                                 // between the two is also treated as obstacle for safety
 
   // Frontier filtering
-  int   min_frontier_size{3};   // discard frontiers smaller than this (cells)
-  double max_frontier_split_size{1.5}; // split frontiers whose extent (m) exceeds this
+  int    min_frontier_size{3};  // discard frontiers smaller than this (cells)
+  double min_frontier_dist{3.0};
+
+  // Frontier splitting via k-means.
+  // Number of clusters: n_r = 1 + floor(f / (1.8 * D) + 0.5)
+  // where f = number of frontier cells, D = sensor_range_cells.
+  // sensor_range is expressed in metres and converted to cells internally.
+  double sensor_range{3.0};     // sensor range D (metres)
+
+  // K-means convergence
+  int    kmeans_max_iter{100};  // maximum k-means iterations per frontier
 
   // Goal selection
   std::vector<double> weights{0., 1., 0.5}; // weight: score = w[0] * norm_info_gain^exponent + w[1] * norm_distance + w[2] * norm_yaw_diff
