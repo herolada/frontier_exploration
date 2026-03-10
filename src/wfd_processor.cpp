@@ -254,17 +254,15 @@ std::optional<Frontier> WFDProcessor::selectBest(
     double norm_info = std::pow(f.size / max_info, exp);
     double norm_dist = robot_pos.distanceTo(f.centroid) / max_dist;
     double norm_yaw_diff = std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw) / max_yaw_diff;
-    f.score = w[0] * norm_info + w[1] * norm_dist + w[2] * norm_yaw_diff;
-  }
+    f.score = w[0] * norm_info - w[1] * norm_dist - w[2] * norm_yaw_diff;
 
-  // Log all frontier scores
-  for (std::size_t i = 0; i < frontiers.size(); ++i) {
-    LOG_INFO_THROTTLE(logger_, 2000,
-      "  Frontier [{}]: size={:.0f}, dist={:.2f} m, score={:.3f}",
-      i,
-      frontiers[i].size,
-      robot_pos.distanceTo(frontiers[i].centroid),
-      frontiers[i].score);
+    logger_.warn(
+      "  Frontier [x {:.1f},y {:.1f}]: size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, score={:.3f}",
+      f.centroid.x, f.centroid.y,
+      f.size,
+      robot_pos.distanceTo(f.centroid),
+      std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
+      f.score);
   }
 
   auto best_it = std::max_element(frontiers.begin(), frontiers.end(),

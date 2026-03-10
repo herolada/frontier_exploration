@@ -1,7 +1,7 @@
 /**:
   ros__parameters:
     # ── Topics / frames ──────────────────────────────────────────────────
-    map_topic: "/map"
+    map_topic: "/map_occupancy_grid"
     robot_frame: "base_link"
     nav2_action: "navigate_to_pose"
 
@@ -21,16 +21,17 @@
       # raw value < free_threshold            → TRAVERSABLE
       # raw value >= free_threshold            → OBSTACLE  (conservative)
       # raw value == -1                        → UNEXPLORED
-      free_threshold: 50
-      occ_threshold: 65         # kept for reference; currently any val >= free_threshold is obstacle
+      free_threshold: 126
+      occ_threshold: 126         # kept for reference; currently any val >= free_threshold is obstacle
 
       # Frontier filtering
       min_frontier_size: 3      # minimum frontier cells to consider (filters noise)
+      min_frontier_dist: 3.0      # minimum frontier cells to consider (filters noise)
 
       # A frontier whose spatial extent exceeds this value (metres) is split
       # into sub-frontiers of at most this size
       max_frontier_split_size: 1.5   # metres
 
       # Goal selection: score = w[0] * norm_info_gain^exponent + w[1] * norm_distance + w[2] * norm_yaw_diff
-      weights: [0., 1., 0.5]
+      weights: [0., 1., 3.0]
       info_gain_exponent: 1.0
