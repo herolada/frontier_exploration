@@ -43,6 +43,11 @@ ROSInterface::ROSInterface(rclcpp::Node::SharedPtr node)
       params_.marker_topic, 10);
   }
 
+  if (params_.publish_best_frontier) {
+    best_frontier_pub_ = node_->create_publisher<geometry_msgs::msg::PoseStamped>(
+      params_.best_frontier_topic, 10);
+  }
+
   // WFD processor
   wfd_processor_ = std::make_unique<wfd::WFDProcessor>(params_.wfd, logger_);
 
@@ -101,6 +106,9 @@ ExplorerParams ROSInterface::loadParams()
   p.tf_timeout_s     = node_->declare_parameter("tf_timeout_s",     p.tf_timeout_s);
   p.publish_markers  = node_->declare_parameter("publish_markers",  p.publish_markers);
   p.marker_topic     = node_->declare_parameter("marker_topic",     p.marker_topic);
+  p.send_action      = node_->declare_parameter("send_action",       p.send_action);
+  p.publish_best_frontier = node_->declare_parameter("publish_best_frontier", p.publish_best_frontier);
+  p.best_frontier_topic = node_->declare_parameter("best_frontier_topic", p.best_frontier_topic);
 
   p.wfd.free_threshold          = node_->declare_parameter("wfd.free_threshold",          p.wfd.free_threshold);
   p.wfd.occ_threshold           = node_->declare_parameter("wfd.occ_threshold",           p.wfd.occ_threshold);
@@ -378,8 +386,20 @@ void ROSInterface::explorationLoop()
     // ------------------------------------------------------------------
     // 7. Navigate to goal
     // ------------------------------------------------------------------
-    bool success = navigateTo(best->centroid, map_frame);
-    logger_.info("Navigation result: {}", success ? "SUCCESS" : "FAILED/ABORTED");
+    if (params_.send_action) {
+      bool success = navigateTo(best->centroid, map_frame);
+      logger_.info("Navigation result: {}", success ? "SUCCESS" : "FAILED/ABORTED");  
+    }
+
+    if (params_.publish_best_frontier) {
+      geometry_msgs::msg::PoseStamped best_frontier_pose;
+      best_frontier_pose.header.stamp = node_->now();
+      best_frontier_pose.header.frame_id = map_frame;
+      best_frontier_pose.pose.position.x = best->centroid.x;
+      best_frontier_pose.pose.position.y = best->centroid.y;
+      best_frontier_pose.pose.position.z = 0.;
+      best_frontier_pub_->publish(best_frontier_pose);
+    }
 
     // ------------------------------------------------------------------
     // 8. Rate limiting (respects time already spent)

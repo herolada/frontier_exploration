@@ -15,6 +15,10 @@
     publish_markers: true
     marker_topic: "~/frontiers"
 
+    # ── Action ───────────────────────────────────────────────────────────
+    send_action: false
+    publish_best_frontier: true
+
     # ── WFD parameters ───────────────────────────────────────────────────
     wfd:
       # Occupancy-grid thresholding
@@ -25,7 +29,7 @@
       occ_threshold: 126         # kept for reference; currently any val >= free_threshold is obstacle
 
       # Frontier filtering
-      min_frontier_size: 3      # minimum frontier cells to consider (filters noise)
+      min_frontier_size: 1      # minimum frontier cells to consider (filters noise)
       min_frontier_dist: 3.0      # minimum frontier cells to consider (filters noise)
 
       # Frontier splitting via k-means.

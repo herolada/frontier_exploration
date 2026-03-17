@@ -36,6 +36,12 @@ struct ExplorerParams
   double nav_goal_timeout_s{60.0};   // timeout for a single nav2 goal
   double tf_timeout_s{1.0};
 
+  // Action
+  bool send_action{false};
+  bool publish_best_frontier{true};
+  std::string best_frontier_topic{"~/goal"};
+
+
   // Visualisation
   bool publish_markers{true};
   std::string marker_topic{"~/frontiers"};
@@ -131,6 +137,9 @@ private:
 
   // Nav2 action client
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav_client_;
+
+  // Best frontier pub
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr best_frontier_pub_;
 
   // Frontier visualisation publisher
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
