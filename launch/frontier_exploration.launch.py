@@ -28,6 +28,11 @@ def generate_launch_description():
             "config_file",
             default_value=default_config,
             description="Path to the parameter YAML file",
+        ),
+        DeclareLaunchArgument(
+            "use_sim_time",
+            default_value="true",
+            description="simulation/bag or not",
         )
     ]
     # ── Node ─────────────────────────────────────────────────────────────
@@ -40,6 +45,7 @@ def generate_launch_description():
         parameters=[
             # Load the YAML file first (provides defaults)
             LaunchConfiguration("config_file"),
+            {"use_sim_time": LaunchConfiguration("use_sim_time")},
         ],
     )
 
