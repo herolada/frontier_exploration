@@ -27,7 +27,7 @@ struct ExplorerParams
 {
   // Topics / frames
   std::string map_topic{"/map"};
-  std::string robot_frame{"base_link"};
+  std::string robot_frame{"os_sensor"};
   std::string nav2_action{"navigate_to_pose"};
 
   // Timing

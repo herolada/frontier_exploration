@@ -2,7 +2,7 @@
   ros__parameters:
     # ── Topics / frames ──────────────────────────────────────────────────
     map_topic: "/map_occupancy_grid"
-    robot_frame: "base_link"
+    robot_frame: "os_sensor"
     nav2_action: "navigate_to_pose"
 
     # ── Timing ───────────────────────────────────────────────────────────
