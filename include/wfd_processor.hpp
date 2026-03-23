@@ -68,6 +68,11 @@ public:
     std::vector<Frontier> & frontiers,
     const Pose2D & robot_pos);
 
+  std::optional<Frontier> selectBest(
+    std::vector<Frontier> & frontiers,
+    const Pose2D & robot_pos,
+    const Pose2D & center_pose);
+
   void updateParams(const WFDParams & params) { params_ = params; }
   const WFDParams & params() const { return params_; }
 
@@ -78,12 +83,6 @@ private:
    *  it must be TRAVERSABLE and have at least one UNEXPLORED neighbour. */
   bool isFrontierCell(const OccupancyGrid & grid, int col, int row) const;
 
-  /** BFS to collect all cells reachable from (start_col, start_row) that
-   *  also satisfy isFrontierCell.  Returns world positions of the component. */
-  std::vector<Pose2D> bfsFrontierComponent(
-    const OccupancyGrid & grid,
-    int start_col, int start_row,
-    std::vector<bool> & visited_frontier) const;
 
   /**
    * @brief Split a frontier component into sub-frontiers using k-means.

@@ -1,8 +1,10 @@
 #include "ros_interface.hpp"
+#include "frontier_exploration/srv/set_pose.hpp"
 
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 
 #include <chrono>
@@ -48,6 +50,13 @@ ROSInterface::ROSInterface(rclcpp::Node::SharedPtr node)
       params_.best_frontier_topic, 10);
   }
 
+  // Service server for setting point around which to explore
+  auto set_exploration_center_server = node_->create_service<frontier_exploration::srv::SetPose>(
+    "set_exploration_center",
+    std::bind(&ROSInterface::setExplorationCenterCallback, this,
+                std::placeholders::_1, std::placeholders::_2));
+
+
   // WFD processor
   wfd_processor_ = std::make_unique<wfd::WFDProcessor>(params_.wfd, logger_);
 
@@ -88,6 +97,13 @@ void ROSInterface::mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg
 {
   std::lock_guard<std::mutex> lock(map_mutex_);
   latest_map_ = msg;
+}
+
+void ROSInterface::setExplorationCenterCallback(
+  const std::shared_ptr<frontier_exploration::srv::SetPose::Request> req,
+  std::shared_ptr<frontier_exploration::srv::SetPose::Response>)
+{
+  exploration_center_ = req->pose;
 }
 
 // ============================================================
@@ -331,6 +347,23 @@ void ROSInterface::explorationLoop()
 
     const std::string map_frame = map_msg->header.frame_id;
 
+    // Transform the exploration center pose to the map frame.
+    geometry_msgs::msg::PoseStamped exploration_center_map;
+    std::optional<wfd::Pose2D> center_pose;
+
+    if (exploration_center_.has_value()) {
+      auto tf = tf_buffer_->lookupTransform(exploration_center_.value().header.frame_id, map_frame,
+        tf2::TimePointZero,
+        tf2::durationFromSec(params_.tf_timeout_s));
+      tf2::doTransform(exploration_center_.value(), exploration_center_map, tf);
+
+      wfd::Pose2D exploration_center_map_pose;
+      exploration_center_map_pose.x = exploration_center_map.pose.position.x;
+      exploration_center_map_pose.y = exploration_center_map.pose.position.y;
+      exploration_center_map_pose.yaw = 0.;
+      center_pose = exploration_center_map_pose;
+    }
+
     // ------------------------------------------------------------------
     // 2. Build thresholded grid
     // ------------------------------------------------------------------
@@ -372,7 +405,13 @@ void ROSInterface::explorationLoop()
     // ------------------------------------------------------------------
     // 5. Select best frontier
     // ------------------------------------------------------------------
-    auto best = wfd_processor_->selectBest(frontiers, robot_pos);
+    std::optional<wfd::Frontier> best;
+    if(center_pose.has_value()) {
+      best = wfd_processor_->selectBest(frontiers, robot_pos, center_pose.value());
+    } else {
+      best = wfd_processor_->selectBest(frontiers, robot_pos);
+    }
+
     if (!best) {
       logger_.warn("Could not select best frontier");
       continue;

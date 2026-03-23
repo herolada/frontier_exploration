@@ -71,41 +71,8 @@ bool WFDProcessor::isFrontierCell(const OccupancyGrid & grid, int col, int row) 
   return false;
 }
 
-// ============================================================
-//  bfsFrontierComponent
-// ============================================================
-std::vector<Pose2D> WFDProcessor::bfsFrontierComponent(
-  const OccupancyGrid & grid,
-  int start_col, int start_row,
-  std::vector<bool> & visited_frontier) const
-{
-  std::vector<Pose2D> component;
-  std::queue<std::pair<int,int>> q;
 
-  auto idx = [&](int c, int r){ return r * grid.width + c; };
 
-  q.push({start_col, start_row});
-  visited_frontier[static_cast<size_t>(idx(start_col, start_row))] = true;
-
-  while (!q.empty()) {
-    auto [col, row] = q.front();
-    q.pop();
-
-    component.push_back(grid.cellToWorld(col, row));
-
-    for (int d = 0; d < 4; ++d) {
-      int nc = col + kDx[d];
-      int nr = row + kDy[d];
-      if (nc < 0 || nc >= grid.width || nr < 0 || nr >= grid.height) continue;
-      int ni = idx(nc, nr);
-      if (!visited_frontier[static_cast<size_t>(ni)] && isFrontierCell(grid, nc, nr)) {
-        visited_frontier[static_cast<size_t>(ni)] = true;
-        q.push({nc, nr});
-      }
-    }
-  }
-  return component;
-}
 
 // ============================================================
 //  centroid
@@ -213,7 +180,34 @@ std::vector<Frontier> WFDProcessor::splitFrontierKMeans(const Frontier & f)
 }
 
 // ============================================================
-//  detect
+//  detect  –  follows the WFD pseudocode from Keidar & Kaminka (2012)
+//             Fig. 4, lines 1-30.
+//
+//  Notation mapping to the paper:
+//    queue_m               → queue_m      (outer BFS, traversable free space)
+//    queue_f               → queue_f      (inner BFS, one frontier component)
+//    "Map-Open-List"       → map_open     (enqueued in queue_m)
+//    "Map-Close-List"      → map_closed   (dequeued & processed by outer BFS)
+//    "Frontier-Open-List"  → fron_open    (enqueued in queue_f)
+//    "Frontier-Close-List" → fron_closed  (dequeued & processed by inner BFS)
+//
+//  Key reachability guarantee:
+//    The outer BFS (queue_m) only enqueues TRAVERSABLE cells (lines 26-29).
+//    Therefore every frontier component that is discovered is reachable from
+//    the robot's starting cell through free space — obstacles and unexplored
+//    cells are never expanded by the outer BFS.
+//
+//  Connectivity notes (matching common WFD practice):
+//    - Outer BFS adj(p) : 4-connected  (lines 26-29)
+//    - Inner BFS adj(q) : 8-connected  (lines 19-22) — ensures connected
+//      frontier components along diagonal boundaries are captured in one
+//      component rather than being fragmented.
+//
+//  Line 25 ("mark all points of NewFrontier as Map-Close-List"):
+//    The paper marks every cell that the inner BFS *visited* (not just those
+//    confirmed as frontier cells) so that they cannot seed a second inner BFS.
+//    We therefore accumulate all cells dequeued from queue_f into
+//    `inner_visited` and mark them map_closed after the inner loop.
 // ============================================================
 std::vector<Frontier> WFDProcessor::detect(
   const OccupancyGrid & grid,
@@ -226,50 +220,198 @@ std::vector<Frontier> WFDProcessor::detect(
 
   auto t_start = std::chrono::steady_clock::now();
 
-  const int total = grid.width * grid.height;
-  std::vector<bool> visited_frontier(static_cast<size_t>(total), false);
+  const std::size_t total = static_cast<std::size_t>(grid.width * grid.height);
+
+  // Per-cell state flags corresponding to the paper's four marking sets.
+  std::vector<bool> map_open   (total, false);  // "Map-Open-List"
+  std::vector<bool> map_closed (total, false);  // "Map-Close-List"
+  std::vector<bool> fron_open  (total, false);  // "Frontier-Open-List"
+  std::vector<bool> fron_closed(total, false);  // "Frontier-Close-List"
+
+  auto idx = [&](int c, int r) -> std::size_t {
+    return static_cast<std::size_t>(r * grid.width + c);
+  };
+  auto inBounds = [&](int c, int r) -> bool {
+    return c >= 0 && c < grid.width && r >= 0 && r < grid.height;
+  };
+
+  // Convert robot world position to nearest traversable grid cell.
+  // (This is "pose" in line 2 of the pseudocode.)
+  auto [robot_col, robot_row] = grid.worldToCell(robot_pos.x, robot_pos.y);
+
+  if (grid.at(robot_col, robot_row) != CellState::TRAVERSABLE) {
+    bool found = false;
+    for (int radius = 1; radius <= 10 && !found; ++radius) {
+      for (int dr = -radius; dr <= radius && !found; ++dr) {
+        for (int dc = -radius; dc <= radius && !found; ++dc) {
+          int c = robot_col + dc, r = robot_row + dr;
+          if (inBounds(c, r) && grid.at(c, r) == CellState::TRAVERSABLE) {
+            robot_col = c; robot_row = r; found = true;
+          }
+        }
+      }
+    }
+    if (!found) {
+      logger_.warn("WFD: robot cell is not traversable and no free neighbour found");
+      return {};
+    }
+  }
+
+  // ── Lines 1-3 ─────────────────────────────────────────────────────────
+  // queue_m ← ∅
+  // ENQUEUE(queue_m, pose)
+  // mark pose as "Map-Open-List"
+  std::queue<std::pair<int,int>> queue_m;
+  queue_m.push({robot_col, robot_row});
+  map_open[idx(robot_col, robot_row)] = true;
 
   std::vector<Frontier> frontiers;
 
-  for (int row = 0; row < grid.height; ++row) {
-    for (int col = 0; col < grid.width; ++col) {
-      int i = grid.index(col, row);
-      if (visited_frontier[static_cast<size_t>(i)]) continue;
-      if (!isFrontierCell(grid, col, row)) continue;
+  // ── Line 4 ────────────────────────────────────────────────────────────
+  // while queue_m is not empty do
+  while (!queue_m.empty()) {
 
-      visited_frontier[static_cast<size_t>(i)] = true;
+    // Line 5: p ← DEQUEUE(queue_m)
+    auto [p_col, p_row] = queue_m.front();
+    queue_m.pop();
 
-      // BFS to collect connected frontier component
-      auto cells = bfsFrontierComponent(grid, col, row, visited_frontier);
+    // Lines 6-7: if p is marked as "Map-Close-List" then continue
+    if (map_closed[idx(p_col, p_row)]) continue;
 
-      if (static_cast<int>(cells.size()) < params_.min_frontier_size) continue;
+    // Line 8: if p is a frontier point then
+    if (isFrontierCell(grid, p_col, p_row)) {
 
-      Frontier f;
-      f.cells    = std::move(cells);
-      f.centroid = centroid(f.cells);
-      f.size     = static_cast<double>(f.cells.size());
+      // Lines 9-12:
+      // queue_f ← ∅
+      // NewFrontier ← ∅
+      // ENQUEUE(queue_f, p)
+      // mark p as "Frontier-Open-List"
+      std::queue<std::pair<int,int>> queue_f;
+      std::vector<Pose2D>           new_frontier_cells;
 
-      // Split via k-means (n_r formula)
-      auto parts = splitFrontierKMeans(f);
-      for (auto & part : parts) {
-        frontiers.push_back(std::move(part));
+      // All cells dequeued from queue_f this iteration — needed for line 25.
+      std::vector<std::size_t>       inner_visited;
+
+      queue_f.push({p_col, p_row});
+      fron_open[idx(p_col, p_row)] = true;
+
+      // ── Line 13 ───────────────────────────────────────────────────────
+      // while queue_f is not empty do
+      while (!queue_f.empty()) {
+
+        // Line 14: q ← DEQUEUE(queue_f)
+        auto [q_col, q_row] = queue_f.front();
+        queue_f.pop();
+        const std::size_t qi = idx(q_col, q_row);
+
+        // Lines 15-16: if q is marked as {"Map-Close-List","Frontier-Close-List"} then continue
+        if (map_closed[qi] || fron_closed[qi]) continue;
+
+        // Track every cell the inner BFS processes (for line 25 below).
+        inner_visited.push_back(qi);
+
+        // Line 17: if q is a frontier point then
+        if (isFrontierCell(grid, q_col, q_row)) {
+
+          // Line 18: add q to NewFrontier
+          new_frontier_cells.push_back(grid.cellToWorld(q_col, q_row));
+
+          // Lines 19-22: for all w ∈ adj(q) do
+          //   (8-connected — captures diagonally-adjacent frontier cells
+          //    in the same component)
+          //   if w not marked as {"Frontier-Open-List","Frontier-Close-List",
+          //                       "Map-Close-List"} then
+          //     ENQUEUE(queue_f, w)
+          //     mark w as "Frontier-Open-List"
+          for (int d = 0; d < 8; ++d) {
+            int wc = q_col + kDx8[d];
+            int wr = q_row + kDy8[d];
+            if (!inBounds(wc, wr)) continue;
+            const std::size_t wi = idx(wc, wr);
+            if (!fron_open[wi] && !fron_closed[wi] && !map_closed[wi]) {
+              queue_f.push({wc, wr});
+              fron_open[wi] = true;
+            }
+          }
+        }
+
+        // Line 23: mark q as "Frontier-Close-List"
+        fron_closed[qi] = true;
+
+      }  // end while queue_f  (line 13)
+
+      // Line 24: save data of NewFrontier
+      // Apply k-means splitting and store resulting sub-frontiers.
+      if (static_cast<int>(new_frontier_cells.size()) >= params_.min_frontier_size) {
+        Frontier f;
+        f.cells    = new_frontier_cells;
+        f.centroid = centroid(f.cells);
+        f.size     = static_cast<double>(f.cells.size());
+
+        auto parts = splitFrontierKMeans(f);
+        for (auto & part : parts) {
+          frontiers.push_back(std::move(part));
+        }
       }
+
+      // Line 25: mark all points of NewFrontier as "Map-Close-List"
+      // We mark every cell the inner BFS visited (inner_visited), not only
+      // the confirmed frontier cells.  This matches the paper's intent: once
+      // a frontier component has been extracted, none of its constituent cells
+      // should trigger a second inner BFS from the outer loop.
+      for (const std::size_t ci : inner_visited) {
+        map_closed[ci] = true;
+      }
+
+    }  // end if frontier point  (line 8)
+
+    // Lines 26-29: for all v ∈ adj(p) do
+    //   (4-connected outer BFS — walks through free space only)
+    //   if v not marked as {"Map-Open-List","Map-Close-List"}
+    //   and v has at least one "Map-Open-Space" neighbour then
+    //     ENQUEUE(queue_m, v)
+    //     mark v as "Map-Open-List"
+    //
+    // "has at least one Map-Open-Space neighbour" in the paper is the
+    // condition that keeps the outer BFS in known free space.  Interpreting
+    // "Map-Open-Space" as TRAVERSABLE, the simplest equivalent is: only
+    // enqueue v if v itself is TRAVERSABLE.  A TRAVERSABLE cell always
+    // neighbours at least one TRAVERSABLE cell (itself counts via the
+    // isFrontierCell check, and its traversability is the criterion), which
+    // satisfies the paper's neighbour condition.
+    for (int d = 0; d < 4; ++d) {
+      int vc = p_col + kDx[d];
+      int vr = p_row + kDy[d];
+      if (!inBounds(vc, vr)) continue;
+      const std::size_t vi = idx(vc, vr);
+
+      if (map_open[vi] || map_closed[vi]) continue;
+
+      // Only expand free/traversable cells (reachability guarantee).
+      if (grid.at(vc, vr) != CellState::TRAVERSABLE) continue;
+
+      queue_m.push({vc, vr});
+      map_open[vi] = true;
     }
-  }
+
+    // Line 30: mark p as "Map-Close-List"
+    map_closed[idx(p_col, p_row)] = true;
+
+  }  // end while queue_m  (line 4)
 
   auto t_end = std::chrono::steady_clock::now();
   double ms  = std::chrono::duration<double, std::milli>(t_end - t_start).count();
 
-  logger_.info("WFD: found {} frontiers in {:.1f} ms (grid {}x{})",
-    frontiers.size(), ms, grid.width, grid.height);
+  logger_.info("WFD: found {} frontier(s) in {:.1f} ms (grid {}x{}, robot cell [{},{}])",
+    frontiers.size(), ms, grid.width, grid.height, robot_col, robot_row);
 
-  (void)robot_pos;  // could be used to sort by proximity to seed the BFS
   return frontiers;
 }
 
 // ============================================================
 //  selectBest
 // ============================================================
+
 std::optional<Frontier> WFDProcessor::selectBest(
   std::vector<Frontier> & frontiers,
   const Pose2D & robot_pos)
@@ -283,7 +425,7 @@ std::optional<Frontier> WFDProcessor::selectBest(
   for (const auto & f : frontiers) {
     max_info = std::max(max_info, f.size); // TODO replace this with something better than information gain == number of frontire cells connected to this component.
     max_dist = std::max(max_dist, robot_pos.distanceTo(f.centroid));
-    max_yaw_diff = std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw);
+    max_yaw_diff = std::max(max_yaw_diff, std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw));
   }  
   
   if (max_info < 1e-9) max_info = 1.0;
@@ -298,6 +440,74 @@ std::optional<Frontier> WFDProcessor::selectBest(
     double norm_dist = robot_pos.distanceTo(f.centroid) / max_dist;
     double norm_yaw_diff = std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw) / max_yaw_diff;
     f.score = w[0] * norm_info - w[1] * norm_dist - w[2] * norm_yaw_diff;
+
+    // logger_.info(
+    //   "Robot yaw {:.2f}, y_diff {:.2f}, x_diff {:.2f}, atan2 {:.2f}, max_yaw_diff {:.2f}",
+    //   robot_pos.yaw,
+    //   f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x,
+    //   std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x),
+    //   max_yaw_diff);
+
+    logger_.warn(
+      "  Frontier [x {:.1f},y {:.1f}]: size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, score={:.3f}",
+      f.centroid.x, f.centroid.y,
+      f.size,
+      robot_pos.distanceTo(f.centroid),
+      std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
+      f.score);
+  }
+
+  auto best_it = std::max_element(frontiers.begin(), frontiers.end(),
+    [](const Frontier & a, const Frontier & b){ return a.score < b.score; });
+
+  logger_.info("WFD: best frontier idx={}, size={:.0f}, score={:.3f}, centroid=({:.2f},{:.2f})",
+    std::distance(frontiers.begin(), best_it),
+    best_it->size, best_it->score,
+    best_it->centroid.x, best_it->centroid.y);
+
+  return *best_it;
+}
+
+std::optional<Frontier> WFDProcessor::selectBest(
+  std::vector<Frontier> & frontiers,
+  const Pose2D & robot_pos,
+  const Pose2D & center_pose)
+{
+  if (frontiers.empty()) return std::nullopt;
+
+  // Normalisation factors
+  double max_info = 0.0;
+  double max_dist = 0.0;
+  double max_yaw_diff = 0.0;
+  double max_center_dist = 0.0;
+  for (const auto & f : frontiers) {
+    max_info = std::max(max_info, f.size); // TODO replace this with something better than information gain == number of frontire cells connected to this component.
+    max_dist = std::max(max_dist, robot_pos.distanceTo(f.centroid));
+    max_yaw_diff = std::max(max_yaw_diff, std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw));
+    max_center_dist = std::max(max_center_dist, robot_pos.distanceTo(center_pose));
+  }
+  
+  if (max_info < 1e-9) max_info = 1.0;
+  if (max_dist < 1e-9) max_dist = 1.0;
+  if (max_yaw_diff < 1e-9) max_yaw_diff = 1.0;
+  if (max_center_dist < 1e-9) max_center_dist = 1.0;
+
+  const std::vector<double> w = params_.weights;
+  const double exp = params_.info_gain_exponent;
+
+  for (auto & f : frontiers) {
+    double norm_info = std::pow(f.size / max_info, exp);
+    double norm_dist = robot_pos.distanceTo(f.centroid) / max_dist;
+    double norm_yaw_diff = std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw) / max_yaw_diff;
+    double norm_center_dist = robot_pos.distanceTo(center_pose) / max_center_dist;
+    f.score = w[0] * norm_info - w[1] * norm_dist - w[2] * norm_yaw_diff - w[3] * norm_center_dist;
+
+    // logger_.info(
+    //   "Robot yaw {:.2f}, y_diff {:.2f}, x_diff {:.2f}, atan2 {:.2f}, max_yaw_diff {:.2f}",
+    //   robot_pos.yaw,
+    //   f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x,
+    //   std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x),
+    //   max_yaw_diff);
 
     logger_.warn(
       "  Frontier [x {:.1f},y {:.1f}]: size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, score={:.3f}",

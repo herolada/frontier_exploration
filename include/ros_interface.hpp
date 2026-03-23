@@ -12,6 +12,7 @@
 #include <tf2_ros/transform_listener.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include "frontier_exploration/srv/set_pose.hpp"
 
 #include <atomic>
 #include <mutex>
@@ -27,7 +28,7 @@ struct ExplorerParams
 {
   // Topics / frames
   std::string map_topic{"/map"};
-  std::string robot_frame{"os_sensor"};
+  std::string robot_frame{"base_link"};
   std::string nav2_action{"navigate_to_pose"};
 
   // Timing
@@ -40,7 +41,6 @@ struct ExplorerParams
   bool send_action{false};
   bool publish_best_frontier{true};
   std::string best_frontier_topic{"~/goal"};
-
 
   // Visualisation
   bool publish_markers{true};
@@ -79,6 +79,10 @@ private:
   // -----------------------------------------------------------------------
 
   void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
+  
+  void setExplorationCenterCallback(
+    const std::shared_ptr<srv::SetPose::Request> req,
+    std::shared_ptr<srv::SetPose::Response> res);
 
   // -----------------------------------------------------------------------
   // Exploration loop (runs in its own thread)
@@ -143,6 +147,9 @@ private:
 
   // Frontier visualisation publisher
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+
+  // Explorationg center service
+  std::optional<geometry_msgs::msg::PoseStamped> exploration_center_;
 
   // Core logic
   std::unique_ptr<wfd::WFDProcessor> wfd_processor_;

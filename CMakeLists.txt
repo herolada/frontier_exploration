@@ -15,6 +15,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Dependencies
 # -------------------------------------------------------------------------
 find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(nav_msgs REQUIRED)
@@ -25,6 +26,11 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 # find_package(fmt REQUIRED)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "srv/SetPose.srv"
+  DEPENDENCIES geometry_msgs
+)
 
 # -------------------------------------------------------------------------
 # Core (ROS-free) library
@@ -70,6 +76,9 @@ ament_target_dependencies(wfd_ros_interface
   tf2_geometry_msgs
 )
 
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(wfd_ros_interface ${cpp_typesupport_target})
+
 # target_link_libraries(wfd_ros_interface wfd_core fmt::fmt)
 
 # -------------------------------------------------------------------------
@@ -101,7 +110,7 @@ install(DIRECTORY include/
   DESTINATION include
 )
 
-install(DIRECTORY launch params
+install(DIRECTORY launch params srv
   DESTINATION share/${PROJECT_NAME}
 )
 
