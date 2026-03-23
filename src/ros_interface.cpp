@@ -50,9 +50,13 @@ ROSInterface::ROSInterface(rclcpp::Node::SharedPtr node)
       params_.best_frontier_topic, 10);
   }
 
+  // Exploration center publisher
+  exploration_center_pub_ = node_->create_publisher<geometry_msgs::msg::PoseStamped>(
+    "~/exploration_center", rclcpp::QoS(1).transient_local());
+
   // Service server for setting point around which to explore
-  auto set_exploration_center_server = node_->create_service<frontier_exploration::srv::SetPose>(
-    "set_exploration_center",
+  set_exploration_center_server_ = node_->create_service<frontier_exploration::srv::SetPose>(
+    "~/set_exploration_center",
     std::bind(&ROSInterface::setExplorationCenterCallback, this,
                 std::placeholders::_1, std::placeholders::_2));
 
@@ -103,7 +107,13 @@ void ROSInterface::setExplorationCenterCallback(
   const std::shared_ptr<frontier_exploration::srv::SetPose::Request> req,
   std::shared_ptr<frontier_exploration::srv::SetPose::Response>)
 {
+  if (req->pose.header.frame_id == "") {
+    logger_.error("Cannot set exploration center to a pose without frame_id.");
+    return;
+  }
+  logger_.info("Setting exploration center to ({}, {}).",req->pose.pose.position.x,req->pose.pose.position.y);
   exploration_center_ = req->pose;
+  exploration_center_pub_->publish(req->pose);
 }
 
 // ============================================================
@@ -264,6 +274,23 @@ void ROSInterface::publishFrontierMarkers(
   del.header.stamp    = node_->now();
   ma.markers.push_back(del);
 
+  // Compute score range for marker scaling
+  wfd::Frontier f{};
+  double default_score = f.score;
+  std::vector<int> unused_frontiers(frontiers.size(), 0); 
+  double min_score = std::numeric_limits<double>::max();
+  double max_score = std::numeric_limits<double>::lowest();
+  for (std::size_t fi = 0; fi < frontiers.size(); ++fi) {
+    const auto & f = frontiers[fi];
+    if (f.score == default_score) {
+      unused_frontiers[fi] = 1;
+      continue;
+    }
+    min_score = std::min(min_score, f.score);
+    max_score = std::max(max_score, f.score);
+  }
+  const double score_range = (max_score > min_score) ? (max_score - min_score) : 1.0;
+
   int id = 0;
   for (std::size_t fi = 0; fi < frontiers.size(); ++fi) {
     const auto & f = frontiers[fi];
@@ -282,8 +309,10 @@ void ROSInterface::publishFrontierMarkers(
     m.pose.position.y = f.centroid.y;
     m.pose.position.z = 0.05;
     m.pose.orientation.w = 1.0;
-    m.scale.x = m.scale.y = m.scale.z = is_best ? 0.4 : 0.2;
-    m.color.a = 1.0;
+    const double t = (f.score - min_score) / score_range;
+    const double marker_size = std::max(0.2, 0.3 + t * (0.8 - 0.3));
+    m.scale.x = m.scale.y = m.scale.z = static_cast<float>(marker_size);
+    m.color.a = unused_frontiers[fi] ? 0.5 : 1.0;
     m.color.r = is_best ? 1.0f : 0.0f;
     m.color.g = is_best ? 0.5f : 0.8f;
     m.color.b = 0.0f;
@@ -297,7 +326,7 @@ void ROSInterface::publishFrontierMarkers(
       pts.id        = id++;
       pts.type      = visualization_msgs::msg::Marker::POINTS;
       pts.action    = visualization_msgs::msg::Marker::ADD;
-      pts.scale.x   = pts.scale.y = 0.04;
+      pts.scale.x   = pts.scale.y = 0.1;
       pts.color.a   = 0.5;
       pts.color.r   = 0.2f;
       pts.color.g   = 0.6f;
@@ -351,17 +380,25 @@ void ROSInterface::explorationLoop()
     geometry_msgs::msg::PoseStamped exploration_center_map;
     std::optional<wfd::Pose2D> center_pose;
 
+    
     if (exploration_center_.has_value()) {
-      auto tf = tf_buffer_->lookupTransform(exploration_center_.value().header.frame_id, map_frame,
-        tf2::TimePointZero,
-        tf2::durationFromSec(params_.tf_timeout_s));
-      tf2::doTransform(exploration_center_.value(), exploration_center_map, tf);
+      try {
+        auto tf = tf_buffer_->lookupTransform(exploration_center_.value().header.frame_id, map_frame,
+          tf2::TimePointZero,
+          tf2::durationFromSec(params_.tf_timeout_s));
+        tf2::doTransform(exploration_center_.value(), exploration_center_map, tf);
 
-      wfd::Pose2D exploration_center_map_pose;
-      exploration_center_map_pose.x = exploration_center_map.pose.position.x;
-      exploration_center_map_pose.y = exploration_center_map.pose.position.y;
-      exploration_center_map_pose.yaw = 0.;
-      center_pose = exploration_center_map_pose;
+        wfd::Pose2D exploration_center_map_pose;
+        exploration_center_map_pose.x = exploration_center_map.pose.position.x;
+        exploration_center_map_pose.y = exploration_center_map.pose.position.y;
+        exploration_center_map_pose.yaw = 0.;
+        center_pose = exploration_center_map_pose;
+
+        logger_.info("Exploration center: (x {:.2f}, y {:.2f}, yaw {:.2f}) in '{}'",
+          center_pose->x, center_pose->y, center_pose->yaw, map_frame);
+      } catch (const tf2::TransformException & ex) {
+        logger_.warn("TF lookup failed: {}", ex.what());
+      }
     }
 
     // ------------------------------------------------------------------
@@ -387,7 +424,7 @@ void ROSInterface::explorationLoop()
       continue;
     }
     wfd::Pose2D robot_pos = *robot_pos_opt;
-
+    
     logger_.info("Robot position: (x {:.2f}, y {:.2f}, yaw {:.2f}) in '{}'",
       robot_pos.x, robot_pos.y, robot_pos.yaw, map_frame);
 
@@ -406,11 +443,7 @@ void ROSInterface::explorationLoop()
     // 5. Select best frontier
     // ------------------------------------------------------------------
     std::optional<wfd::Frontier> best;
-    if(center_pose.has_value()) {
-      best = wfd_processor_->selectBest(frontiers, robot_pos, center_pose.value());
-    } else {
-      best = wfd_processor_->selectBest(frontiers, robot_pos);
-    }
+    best = wfd_processor_->selectBest(frontiers, robot_pos, center_pose);
 
     if (!best) {
       logger_.warn("Could not select best frontier");

@@ -149,7 +149,9 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
 
   // Explorationg center service
+  rclcpp::Service<frontier_exploration::srv::SetPose>::SharedPtr set_exploration_center_server_;
   std::optional<geometry_msgs::msg::PoseStamped> exploration_center_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr exploration_center_pub_;
 
   // Core logic
   std::unique_ptr<wfd::WFDProcessor> wfd_processor_;

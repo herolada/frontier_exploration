@@ -41,7 +41,7 @@ public:
     int width, int height,
     double resolution,
     double origin_x, double origin_y,
-    const std::string & frame_id) const;
+    const std::string & frame_id);
 
   /**
    * @brief Run WFD starting from robot position.
@@ -66,12 +66,9 @@ public:
    */
   std::optional<Frontier> selectBest(
     std::vector<Frontier> & frontiers,
-    const Pose2D & robot_pos);
-
-  std::optional<Frontier> selectBest(
-    std::vector<Frontier> & frontiers,
     const Pose2D & robot_pos,
-    const Pose2D & center_pose);
+    const std::optional<Pose2D> & center_pose);
+
 
   void updateParams(const WFDParams & params) { params_ = params; }
   const WFDParams & params() const { return params_; }

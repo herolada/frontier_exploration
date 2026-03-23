@@ -4,6 +4,7 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <map>
 #include <queue>
 #include <stdexcept>
 
@@ -33,7 +34,7 @@ OccupancyGrid WFDProcessor::buildGrid(
   int width, int height,
   double resolution,
   double origin_x, double origin_y,
-  const std::string & frame_id) const
+  const std::string & frame_id)
 {
   OccupancyGrid grid;
   grid.width      = width;
@@ -43,6 +44,15 @@ OccupancyGrid WFDProcessor::buildGrid(
   grid.origin_y   = origin_y;
   grid.frame_id   = frame_id;
   grid.cells.resize(static_cast<size_t>(width * height));
+
+  // // DEBUG: histogram of raw map values
+  // {
+  //   std::map<int, int> hist;
+  //   for (int i = 0; i < width * height; ++i) hist[raw[static_cast<size_t>(i)]]++;
+  //   std::string out = "raw value histogram: ";
+  //   for (auto & [val, cnt] : hist) out += std::to_string(val) + ":" + std::to_string(cnt) + " ";
+  //   logger_.info("{}", out);
+  // }
 
   for (int i = 0; i < width * height; ++i) {
     const int8_t v = raw[static_cast<size_t>(i)];
@@ -103,7 +113,7 @@ std::vector<Frontier> WFDProcessor::splitFrontierKMeans(const Frontier & f)
   const double f_d  = static_cast<double>(n_cells);
   const int    n_r  = 1 + static_cast<int>(std::floor(f_d / (1.8 * D_m) + 0.5));
 
-  logger_.info("KMeans split: {} cells, D={:.1f} m → {} cluster(s)", n_cells, D_m, n_r);
+  logger_.debug("KMeans split: {} cells, D={:.1f} m → {} cluster(s)", n_cells, D_m, n_r);
 
   if (n_r <= 1) {
     return {f};  // no split needed
@@ -154,7 +164,7 @@ std::vector<Frontier> WFDProcessor::splitFrontierKMeans(const Frontier & f)
     }
 
     if (!changed) {
-      logger_.info("KMeans converged after {} iteration(s)", iter + 1);
+      logger_.debug("KMeans converged after {} iteration(s)", iter + 1);
       break;
     }
   }
@@ -412,66 +422,30 @@ std::vector<Frontier> WFDProcessor::detect(
 //  selectBest
 // ============================================================
 
-std::optional<Frontier> WFDProcessor::selectBest(
-  std::vector<Frontier> & frontiers,
-  const Pose2D & robot_pos)
-{
-  if (frontiers.empty()) return std::nullopt;
+// std::optional<Frontier> WFDProcessor::selectBest(
+//   std::vector<Frontier> & frontiers,
+//   const Pose2D & robot_pos)
+// {
+//   return selectBestImpl(frontiers, robot_pos, nullptr);
+// }
 
-  // Normalisation factors
-  double max_info = 0.0;
-  double max_dist = 0.0;
-  double max_yaw_diff = 0.0;
-  for (const auto & f : frontiers) {
-    max_info = std::max(max_info, f.size); // TODO replace this with something better than information gain == number of frontire cells connected to this component.
-    max_dist = std::max(max_dist, robot_pos.distanceTo(f.centroid));
-    max_yaw_diff = std::max(max_yaw_diff, std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw));
-  }  
-  
-  if (max_info < 1e-9) max_info = 1.0;
-  if (max_dist < 1e-9) max_dist = 1.0;
-  if (max_yaw_diff < 1e-9) max_yaw_diff = 1.0;
+// std::optional<Frontier> WFDProcessor::selectBest(
+//   std::vector<Frontier> & frontiers,
+//   const Pose2D & robot_pos,
+//   const Pose2D & center_pose)
+// {
+//   return selectBestImpl(frontiers, robot_pos, &center_pose);
+// }
 
-  const std::vector<double> w = params_.weights;
-  const double exp = params_.info_gain_exponent;
-
-  for (auto & f : frontiers) {
-    double norm_info = std::pow(f.size / max_info, exp);
-    double norm_dist = robot_pos.distanceTo(f.centroid) / max_dist;
-    double norm_yaw_diff = std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw) / max_yaw_diff;
-    f.score = w[0] * norm_info - w[1] * norm_dist - w[2] * norm_yaw_diff;
-
-    // logger_.info(
-    //   "Robot yaw {:.2f}, y_diff {:.2f}, x_diff {:.2f}, atan2 {:.2f}, max_yaw_diff {:.2f}",
-    //   robot_pos.yaw,
-    //   f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x,
-    //   std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x),
-    //   max_yaw_diff);
-
-    logger_.warn(
-      "  Frontier [x {:.1f},y {:.1f}]: size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, score={:.3f}",
-      f.centroid.x, f.centroid.y,
-      f.size,
-      robot_pos.distanceTo(f.centroid),
-      std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
-      f.score);
-  }
-
-  auto best_it = std::max_element(frontiers.begin(), frontiers.end(),
-    [](const Frontier & a, const Frontier & b){ return a.score < b.score; });
-
-  logger_.info("WFD: best frontier idx={}, size={:.0f}, score={:.3f}, centroid=({:.2f},{:.2f})",
-    std::distance(frontiers.begin(), best_it),
-    best_it->size, best_it->score,
-    best_it->centroid.x, best_it->centroid.y);
-
-  return *best_it;
-}
-
+// std::optional<Frontier> WFDProcessor::selectBestImpl(
+//   std::vector<Frontier> & frontiers,
+//   const Pose2D & robot_pos,
+//   const Pose2D * center_pose)
+// }
 std::optional<Frontier> WFDProcessor::selectBest(
   std::vector<Frontier> & frontiers,
   const Pose2D & robot_pos,
-  const Pose2D & center_pose)
+  const std::optional<Pose2D> & center_pose)
 {
   if (frontiers.empty()) return std::nullopt;
 
@@ -481,12 +455,14 @@ std::optional<Frontier> WFDProcessor::selectBest(
   double max_yaw_diff = 0.0;
   double max_center_dist = 0.0;
   for (const auto & f : frontiers) {
-    max_info = std::max(max_info, f.size); // TODO replace this with something better than information gain == number of frontire cells connected to this component.
+    max_info = std::max(max_info, f.size); // TODO replace this with something better than information gain == number of frontier cells connected to this component.
     max_dist = std::max(max_dist, robot_pos.distanceTo(f.centroid));
     max_yaw_diff = std::max(max_yaw_diff, std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw));
-    max_center_dist = std::max(max_center_dist, robot_pos.distanceTo(center_pose));
+    if (center_pose) {
+      max_center_dist = std::max(max_center_dist, center_pose->distanceTo(f.centroid));
+    }
   }
-  
+
   if (max_info < 1e-9) max_info = 1.0;
   if (max_dist < 1e-9) max_dist = 1.0;
   if (max_yaw_diff < 1e-9) max_yaw_diff = 1.0;
@@ -496,26 +472,33 @@ std::optional<Frontier> WFDProcessor::selectBest(
   const double exp = params_.info_gain_exponent;
 
   for (auto & f : frontiers) {
+    double dist = robot_pos.distanceTo(f.centroid);
+    if (dist < params_.min_frontier_dist) {
+      continue;
+    }
     double norm_info = std::pow(f.size / max_info, exp);
-    double norm_dist = robot_pos.distanceTo(f.centroid) / max_dist;
+    double norm_dist = dist / max_dist;
     double norm_yaw_diff = std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw) / max_yaw_diff;
-    double norm_center_dist = robot_pos.distanceTo(center_pose) / max_center_dist;
-    f.score = w[0] * norm_info - w[1] * norm_dist - w[2] * norm_yaw_diff - w[3] * norm_center_dist;
+    f.score = w[0] * norm_info - w[1] * norm_dist - w[2] * norm_yaw_diff;
 
-    // logger_.info(
-    //   "Robot yaw {:.2f}, y_diff {:.2f}, x_diff {:.2f}, atan2 {:.2f}, max_yaw_diff {:.2f}",
-    //   robot_pos.yaw,
-    //   f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x,
-    //   std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x),
-    //   max_yaw_diff);
-
-    logger_.warn(
-      "  Frontier [x {:.1f},y {:.1f}]: size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, score={:.3f}",
-      f.centroid.x, f.centroid.y,
-      f.size,
-      robot_pos.distanceTo(f.centroid),
-      std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
-      f.score);
+    if (center_pose) {
+      double norm_center_dist = center_pose->distanceTo(f.centroid) / max_center_dist;
+      f.score -= w[3] * norm_center_dist;
+      logger_.debug(
+        "  Frontier [x {:.1f},y {:.1f}]: size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, center_dist={:.2f}, score={:.3f}",
+        f.centroid.x, f.centroid.y,
+        f.size, dist,
+        std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
+        center_pose->distanceTo(f.centroid),
+        f.score);
+    } else {
+      logger_.debug(
+        "  Frontier [x {:.1f},y {:.1f}]: size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, score={:.3f}",
+        f.centroid.x, f.centroid.y,
+        f.size, dist,
+        std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
+        f.score);
+    }
   }
 
   auto best_it = std::max_element(frontiers.begin(), frontiers.end(),

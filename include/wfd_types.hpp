@@ -83,7 +83,7 @@ struct Frontier
   std::vector<Pose2D> cells;   // individual frontier cell world positions
   Pose2D centroid;
   double size{0.0};             // number of cells (used as info-gain proxy)
-  double score{0.0};            // exploration score
+  double score{-1e6};            // exploration score
 };
 
 // ---------------------------------------------------------------------------
