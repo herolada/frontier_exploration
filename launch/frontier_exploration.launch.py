@@ -18,7 +18,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     pkg_share = FindPackageShare("frontier_exploration")
-    default_config = PathJoinSubstitution([pkg_share, "params", "frontier_exploration.yaml"])
+    default_config = PathJoinSubstitution([pkg_share, "params", "frontier_exploration_helhest.yaml"])
 
     # ── Declare every tuneable as a launch argument ──────────────────────
 
