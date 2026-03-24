@@ -1,7 +1,7 @@
 /**:
   ros__parameters:
     # ── Topics / frames ──────────────────────────────────────────────────
-    map_topic: "/global_costmap/costmap" #"/map_occupancy_grid"
+    map_topic: "/map_occupancy_grid"
     robot_frame: "base_link"
     nav2_action: "navigate_to_pose"
 
@@ -16,7 +16,7 @@
     marker_topic: "~/frontiers"
 
     # ── Action ───────────────────────────────────────────────────────────
-    send_action: false
+    send_action: true
     publish_best_frontier: true
 
     # ── WFD parameters ───────────────────────────────────────────────────

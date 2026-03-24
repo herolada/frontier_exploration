@@ -46,13 +46,13 @@ OccupancyGrid WFDProcessor::buildGrid(
   grid.cells.resize(static_cast<size_t>(width * height));
 
   // // DEBUG: histogram of raw map values
-  // {
-  //   std::map<int, int> hist;
-  //   for (int i = 0; i < width * height; ++i) hist[raw[static_cast<size_t>(i)]]++;
-  //   std::string out = "raw value histogram: ";
-  //   for (auto & [val, cnt] : hist) out += std::to_string(val) + ":" + std::to_string(cnt) + " ";
-  //   logger_.info("{}", out);
-  // }
+  {
+    std::map<int, int> hist;
+    for (int i = 0; i < width * height; ++i) hist[raw[static_cast<size_t>(i)]]++;
+    std::string out = "raw value histogram: ";
+    for (auto & [val, cnt] : hist) out += std::to_string(val) + ":" + std::to_string(cnt) + " ";
+    logger_.info("{}", out);
+  }
 
   for (int i = 0; i < width * height; ++i) {
     const int8_t v = raw[static_cast<size_t>(i)];
@@ -275,6 +275,8 @@ std::vector<Frontier> WFDProcessor::detect(
   queue_m.push({robot_col, robot_row});
   map_open[idx(robot_col, robot_row)] = true;
 
+  int first_few_iterations = 10;
+
   std::vector<Frontier> frontiers;
 
   // ── Line 4 ────────────────────────────────────────────────────────────
@@ -394,8 +396,14 @@ std::vector<Frontier> WFDProcessor::detect(
       int vr = p_row + kDy[d];
       if (!inBounds(vc, vr)) continue;
       const std::size_t vi = idx(vc, vr);
-
-      if (map_open[vi] || map_closed[vi]) continue;
+      
+      if (first_few_iterations > 0 && fron_closed[vi]) { // this helps avoid case where the robot starts in a frontier and cannot explore further
+        map_closed[vi] = false;
+      }
+      
+      if (map_open[vi] || map_closed[vi]) {
+          continue;
+      }
 
       // Only expand free/traversable cells (reachability guarantee).
       if (grid.at(vc, vr) != CellState::TRAVERSABLE) continue;
@@ -403,6 +411,7 @@ std::vector<Frontier> WFDProcessor::detect(
       queue_m.push({vc, vr});
       map_open[vi] = true;
     }
+    --first_few_iterations;
 
     // Line 30: mark p as "Map-Close-List"
     map_closed[idx(p_col, p_row)] = true;
