@@ -8,7 +8,7 @@
     # ── Timing ───────────────────────────────────────────────────────────
     loop_rate_hz: 1.0          # main exploration loop frequency (Hz)
     map_timeout_s: 5.0         # seconds to wait for a fresh map message
-    nav_goal_timeout_s: 60.0   # per-goal navigation timeout (seconds)
+    nav_goal_timeout_s: 30.0   # per-goal navigation timeout (seconds)
     tf_timeout_s: 1.0          # TF lookup timeout (seconds)
 
     # ── Visualisation ────────────────────────────────────────────────────

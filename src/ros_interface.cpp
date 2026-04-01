@@ -174,8 +174,90 @@ std::optional<wfd::Pose2D> ROSInterface::getRobotPosition(const std::string & ma
 // ============================================================
 //  navigateTo
 // ============================================================
+// bool ROSInterface::navigateTo(const wfd::Pose2D & goal, const std::string & map_frame)
+// {
+//   if (!nav_client_->wait_for_action_server(2s)) {
+//     logger_.error("Nav2 action server '{}' not available", params_.nav2_action);
+//     return false;
+//   }
+
+//   NavigateToPose::Goal goal_msg;
+//   goal_msg.pose.header.frame_id = map_frame;
+//   goal_msg.pose.header.stamp    = node_->now();
+//   goal_msg.pose.pose.position.x = goal.x;
+//   goal_msg.pose.pose.position.y = goal.y;
+//   goal_msg.pose.pose.position.z = 0.0;
+//   goal_msg.pose.pose.orientation.x = 0.0;  
+//   goal_msg.pose.pose.orientation.y = 0.0;  
+//   goal_msg.pose.pose.orientation.z = 0.0;  
+//   goal_msg.pose.pose.orientation.w = 1.0;  // yaw = 0, nav2 will handle orientation
+
+//   logger_.info("Sending nav goal: ({:.2f}, {:.2f}) in '{}'", goal.x, goal.y, map_frame);
+
+//   auto send_goal_options = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
+
+//   // Feedback callback – log distance remaining periodically
+//   send_goal_options.feedback_callback =
+//     [this](GoalHandleNav::SharedPtr /*gh*/,
+//            const std::shared_ptr<const NavigateToPose::Feedback> feedback)
+//     {
+//       LOG_INFO_THROTTLE(logger_, 2000,
+//         "Nav2 feedback: dist_remaining={:.2f} m",
+//         feedback->distance_remaining);
+//     };
+
+//   std::promise<bool> result_promise;
+//   std::future<bool>  result_future = result_promise.get_future();
+
+//   send_goal_options.result_callback =
+//     [this, &result_promise](const GoalHandleNav::WrappedResult & result)
+//     {
+//       switch (result.code) {
+//         case rclcpp_action::ResultCode::SUCCEEDED:
+//           logger_.info("Nav2 goal SUCCEEDED");
+//           result_promise.set_value(true);
+//           break;
+//         case rclcpp_action::ResultCode::ABORTED:
+//           logger_.warn("Nav2 goal ABORTED");
+//           result_promise.set_value(false);
+//           break;
+//         case rclcpp_action::ResultCode::CANCELED:
+//           logger_.warn("Nav2 goal CANCELED");
+//           result_promise.set_value(false);
+//           break;
+//         default:
+//           logger_.error("Nav2 goal: unknown result code");
+//           result_promise.set_value(false);
+//           break;
+//       }
+//     };
+
+//   auto goal_handle_future = nav_client_->async_send_goal(goal_msg, send_goal_options);
+
+//   // Wait for goal to be accepted
+//   if (goal_handle_future.wait_for(5s) != std::future_status::ready) {
+//     logger_.error("Nav2: goal handle future timed out");
+//     return false;
+//   }
+//   auto goal_handle = goal_handle_future.get();
+//   if (!goal_handle) {
+//     logger_.error("Nav2 rejected the goal");
+//     return false;
+//   }
+
+//   // Wait for result with overall timeout
+//   const auto timeout = std::chrono::duration<double>(params_.nav_goal_timeout_s);
+//   if (result_future.wait_for(timeout) != std::future_status::ready) {
+//     logger_.warn("Nav2 goal timed out after {:.0f} s, cancelling", params_.nav_goal_timeout_s);
+//     nav_client_->async_cancel_goal(goal_handle);
+//     return false;
+//   }
+//   return result_future.get();
+// }
+
 bool ROSInterface::navigateTo(const wfd::Pose2D & goal, const std::string & map_frame)
 {
+  logger_.info("NavigateTo called");  
   if (!nav_client_->wait_for_action_server(2s)) {
     logger_.error("Nav2 action server '{}' not available", params_.nav2_action);
     return false;
@@ -206,44 +288,52 @@ bool ROSInterface::navigateTo(const wfd::Pose2D & goal, const std::string & map_
         feedback->distance_remaining);
     };
 
-  std::promise<bool> result_promise;
-  std::future<bool>  result_future = result_promise.get_future();
+  auto result_promise = std::make_shared<std::promise<bool>>();
+  std::future<bool>  result_future = result_promise->get_future();
 
   send_goal_options.result_callback =
-    [this, &result_promise](const GoalHandleNav::WrappedResult & result)
+    [this, result_promise](const GoalHandleNav::WrappedResult & result)
     {
-      switch (result.code) {
-        case rclcpp_action::ResultCode::SUCCEEDED:
-          logger_.info("Nav2 goal SUCCEEDED");
-          result_promise.set_value(true);
-          break;
-        case rclcpp_action::ResultCode::ABORTED:
-          logger_.warn("Nav2 goal ABORTED");
-          result_promise.set_value(false);
-          break;
-        case rclcpp_action::ResultCode::CANCELED:
-          logger_.warn("Nav2 goal CANCELED");
-          result_promise.set_value(false);
-          break;
-        default:
-          logger_.error("Nav2 goal: unknown result code");
-          result_promise.set_value(false);
-          break;
+      try {
+        switch (result.code) {
+          case rclcpp_action::ResultCode::SUCCEEDED:
+            logger_.info("Nav2 goal SUCCEEDED");
+            result_promise->set_value(true);
+            break;
+          case rclcpp_action::ResultCode::ABORTED:
+            logger_.warn("Nav2 goal ABORTED");
+            result_promise->set_value(false);
+            break;
+          case rclcpp_action::ResultCode::CANCELED:
+            logger_.warn("Nav2 goal CANCELED");
+            result_promise->set_value(false);
+            break;
+          default:
+            logger_.error("Nav2 goal: unknown result code");
+            result_promise->set_value(false);
+            break;
+        }
+      } catch (const std::future_error &) {
+        // Nav2 can invoke the result callback more than once (e.g. CANCELED
+        // followed by ABORTED).  The promise is already satisfied; ignore.
       }
     };
-
+  logger_.error("A");
   auto goal_handle_future = nav_client_->async_send_goal(goal_msg, send_goal_options);
 
   // Wait for goal to be accepted
+  logger_.error("B");
   if (goal_handle_future.wait_for(5s) != std::future_status::ready) {
     logger_.error("Nav2: goal handle future timed out");
     return false;
   }
+  logger_.error("C");
   auto goal_handle = goal_handle_future.get();
   if (!goal_handle) {
     logger_.error("Nav2 rejected the goal");
     return false;
   }
+  logger_.error("D");
 
   // Wait for result with overall timeout
   const auto timeout = std::chrono::duration<double>(params_.nav_goal_timeout_s);
@@ -252,8 +342,10 @@ bool ROSInterface::navigateTo(const wfd::Pose2D & goal, const std::string & map_
     nav_client_->async_cancel_goal(goal_handle);
     return false;
   }
+  logger_.error("E");
   return result_future.get();
 }
+
 
 // ============================================================
 //  publishFrontierMarkers
