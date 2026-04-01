@@ -451,8 +451,37 @@ std::vector<Frontier> WFDProcessor::detect(
 //   const Pose2D & robot_pos,
 //   const Pose2D * center_pose)
 // }
+
+void WFDProcessor::get_near_occupancy_degree(
+  Frontier & f,
+  const OccupancyGrid & grid)
+{
+  auto [col, row] = grid.worldToCell(f.centroid.x, f.centroid.y);
+  int how_many_neighbors = static_cast<size_t>(params_.frontier_near_occupancy_distance/grid.resolution);
+  if (how_many_neighbors > 0) {
+    for (int i{1}; i < how_many_neighbors; ++i) {
+      if (grid.at(col, row+i) == CellState::OBSTACLE) {
+        f.nearby_occupancy_degree += 1/i; // linear scaling based on manhattan distance
+      }
+      if (grid.at(col, row-i) == CellState::OBSTACLE) {
+        f.nearby_occupancy_degree += 1/i; // linear scaling based on manhattan distance
+      }
+      for (int j{-i}; j < i; ++j) {
+        if (grid.at(col+i, row+j) == CellState::OBSTACLE) {
+          f.nearby_occupancy_degree += 1/i; // linear scaling based on manhattan distance
+        }
+        if (grid.at(col-i, row+j) == CellState::OBSTACLE) {
+          f.nearby_occupancy_degree += 1/i; // linear scaling based on manhattan distance
+        }
+      }
+    }
+  }
+  f.nearby_occupancy_degree /= 8 * how_many_neighbors; // this is a pretty cool way to normalize the degree to <0,1>!
+}
+
 std::optional<Frontier> WFDProcessor::selectBest(
   std::vector<Frontier> & frontiers,
+  OccupancyGrid & grid,
   const Pose2D & robot_pos,
   const std::optional<Pose2D> & center_pose)
 {
@@ -461,20 +490,24 @@ std::optional<Frontier> WFDProcessor::selectBest(
   // Normalisation factors
   double max_info = 0.0;
   double max_dist = 0.0;
-  double max_yaw_diff = 0.0;
+  double max_yaw_diff = 3.14;
   double max_center_dist = 0.0;
-  for (const auto & f : frontiers) {
+  double max_occ_deg = 1.0;
+  
+  for (auto & f : frontiers) {
+    get_near_occupancy_degree(f, grid);
     max_info = std::max(max_info, f.size); // TODO replace this with something better than information gain == number of frontier cells connected to this component.
     max_dist = std::max(max_dist, robot_pos.distanceTo(f.centroid));
-    max_yaw_diff = std::max(max_yaw_diff, std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw));
+    // max_yaw_diff = std::max(max_yaw_diff, std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw));
     if (center_pose) {
       max_center_dist = std::max(max_center_dist, center_pose->distanceTo(f.centroid));
     }
   }
 
+
   if (max_info < 1e-9) max_info = 1.0;
   if (max_dist < 1e-9) max_dist = 1.0;
-  if (max_yaw_diff < 1e-9) max_yaw_diff = 1.0;
+  // if (max_yaw_diff < 1e-9) max_yaw_diff = 1.0;
   if (max_center_dist < 1e-9) max_center_dist = 1.0;
 
   const std::vector<double> w = params_.weights;
@@ -488,17 +521,19 @@ std::optional<Frontier> WFDProcessor::selectBest(
     double norm_info = std::pow(f.size / max_info, exp);
     double norm_dist = dist / max_dist;
     double norm_yaw_diff = std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw) / max_yaw_diff;
-    f.score = w[0] * norm_info - w[1] * norm_dist - w[2] * norm_yaw_diff;
+    double norm_occ_deg = f.nearby_occupancy_degree / max_occ_deg;
+    f.score = w[0] * norm_info - w[1] * norm_dist - w[2] * norm_yaw_diff - w[4] * norm_occ_deg;
 
     if (center_pose) {
       double norm_center_dist = center_pose->distanceTo(f.centroid) / max_center_dist;
       f.score -= w[3] * norm_center_dist;
       logger_.debug(
-        "  Frontier [x {:.1f},y {:.1f}]: size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, center_dist={:.2f}, score={:.3f}",
+        "  Frontier [x {:.1f},y {:.1f}]: size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, center_dist={:.2f}, occ_deg={:.3f}, score={:.3f}",
         f.centroid.x, f.centroid.y,
         f.size, dist,
         std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
         center_pose->distanceTo(f.centroid),
+        f.nearby_occupancy_degree,
         f.score);
     } else {
       logger_.debug(

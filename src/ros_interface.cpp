@@ -535,7 +535,7 @@ void ROSInterface::explorationLoop()
     // 5. Select best frontier
     // ------------------------------------------------------------------
     std::optional<wfd::Frontier> best;
-    best = wfd_processor_->selectBest(frontiers, robot_pos, center_pose);
+    best = wfd_processor_->selectBest(frontiers, grid, robot_pos, center_pose);
 
     if (!best) {
       logger_.warn("Could not select best frontier");

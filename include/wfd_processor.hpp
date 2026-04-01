@@ -54,6 +54,10 @@ public:
     const OccupancyGrid & grid,
     const Pose2D & robot_pos);
 
+  void get_near_occupancy_degree(
+    Frontier & f,
+    const OccupancyGrid & grid);
+
   /**
    * @brief Select the best frontier given robot position.
    *
@@ -66,6 +70,7 @@ public:
    */
   std::optional<Frontier> selectBest(
     std::vector<Frontier> & frontiers,
+    OccupancyGrid & grid,
     const Pose2D & robot_pos,
     const std::optional<Pose2D> & center_pose);
 

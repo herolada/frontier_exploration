@@ -83,6 +83,7 @@ struct Frontier
   std::vector<Pose2D> cells;   // individual frontier cell world positions
   Pose2D centroid;
   double size{0.0};             // number of cells (used as info-gain proxy)
+  double nearby_occupancy_degree{-1e6};        // how occupied is the near neighborhood (more == worse)
   double score{-1e6};            // exploration score
 };
 
@@ -100,6 +101,8 @@ struct WFDParams
   // Frontier filtering
   int    min_frontier_size{3};  // discard frontiers smaller than this (cells)
   double min_frontier_dist{3.0};
+
+  double frontier_near_occupancy_distance{2.0}; // how big area around the robot gets checked for obstacles
 
   // Frontier splitting via k-means.
   // Number of clusters: n_r = 1 + floor(f / (1.8 * D) + 0.5)
