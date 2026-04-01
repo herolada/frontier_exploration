@@ -140,6 +140,7 @@ ExplorerParams ROSInterface::loadParams()
   p.wfd.occ_threshold           = node_->declare_parameter("wfd.occ_threshold",           p.wfd.occ_threshold);
   p.wfd.min_frontier_size       = node_->declare_parameter("wfd.min_frontier_size",       p.wfd.min_frontier_size);
   p.wfd.min_frontier_dist       = node_->declare_parameter("wfd.min_frontier_dist",       p.wfd.min_frontier_dist);
+  p.wfd.frontier_near_occupancy_distance = node_->declare_parameter("wfd.frontier_near_occupancy_distance", p.wfd.frontier_near_occupancy_distance);
   p.wfd.sensor_range            = node_->declare_parameter("wfd.sensor_range",            p.wfd.sensor_range);
   p.wfd.kmeans_max_iter         = node_->declare_parameter("wfd.kmeans_max_iter",         p.wfd.kmeans_max_iter);
   p.wfd.weights                 = node_->declare_parameter("wfd.weights",                 p.wfd.weights);

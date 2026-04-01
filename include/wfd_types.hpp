@@ -83,7 +83,7 @@ struct Frontier
   std::vector<Pose2D> cells;   // individual frontier cell world positions
   Pose2D centroid;
   double size{0.0};             // number of cells (used as info-gain proxy)
-  double nearby_occupancy_degree{-1e6};        // how occupied is the near neighborhood (more == worse)
+  double nearby_occupancy_degree{0.};        // how occupied is the near neighborhood (more == worse)
   double score{-1e6};            // exploration score
 };
 

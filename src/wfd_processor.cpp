@@ -456,27 +456,52 @@ void WFDProcessor::get_near_occupancy_degree(
   Frontier & f,
   const OccupancyGrid & grid)
 {
+  // int k = 0;
   auto [col, row] = grid.worldToCell(f.centroid.x, f.centroid.y);
-  int how_many_neighbors = static_cast<size_t>(params_.frontier_near_occupancy_distance/grid.resolution);
+  int how_many_neighbors = static_cast<size_t>(std::round(params_.frontier_near_occupancy_distance/grid.resolution));
+  // logger_.warn(
+  //           "neighb {}, occ dist, {}, reso {}", how_many_neighbors, params_.frontier_near_occupancy_distance, grid.resolution);
   if (how_many_neighbors > 0) {
-    for (int i{1}; i < how_many_neighbors; ++i) {
-      if (grid.at(col, row+i) == CellState::OBSTACLE) {
-        f.nearby_occupancy_degree += 1/i; // linear scaling based on manhattan distance
-      }
-      if (grid.at(col, row-i) == CellState::OBSTACLE) {
-        f.nearby_occupancy_degree += 1/i; // linear scaling based on manhattan distance
-      }
+    for (int i{1}; i < how_many_neighbors+1; ++i) {
+      // if (grid.at(col, row+i) == CellState::OBSTACLE) {
+      //   f.nearby_occupancy_degree += 1.; // linear scaling based on manhattan distance
+      // }
+      // if (grid.at(col, row-i) == CellState::OBSTACLE) {
+      //   f.nearby_occupancy_degree += 1.; // linear scaling based on manhattan distance
+      // }
       for (int j{-i}; j < i; ++j) {
-        if (grid.at(col+i, row+j) == CellState::OBSTACLE) {
-          f.nearby_occupancy_degree += 1/i; // linear scaling based on manhattan distance
+        // logger_.warn(
+        //     "{},{}", i,j);
+        // logger_.warn(
+        //     "{},{}   {},{}   {},{}   {},{}", col+i, row+j+1, col-i, row+j, col+j, row+i, col+j+1, row-i);
+        // k+=4;
+        if (grid.at(col+i, row+j+1) == CellState::OBSTACLE) {
+          f.nearby_occupancy_degree += 1./i; // linear scaling based on manhattan distance
         }
         if (grid.at(col-i, row+j) == CellState::OBSTACLE) {
-          f.nearby_occupancy_degree += 1/i; // linear scaling based on manhattan distance
+          // logger_.warn(
+          //   "HIT");
+          f.nearby_occupancy_degree += 1./i; // linear scaling based on manhattan distance
         }
+        if (grid.at(col+j, row+i) == CellState::OBSTACLE) {
+          f.nearby_occupancy_degree += 1./i; // linear scaling based on manhattan distance
+        }
+        if (grid.at(col+j+1, row-i) == CellState::OBSTACLE) {
+          f.nearby_occupancy_degree += 1./i; // linear scaling based on manhattan distance
+        }
+        // logger_.warn(
+        // "Cell [{}, {}] state {}",
+        // col-i, row+j,
+        // static_cast<int>(grid.at(col-i, row+j)));
       }
     }
   }
-  f.nearby_occupancy_degree /= 8 * how_many_neighbors; // this is a pretty cool way to normalize the degree to <0,1>!
+  f.nearby_occupancy_degree /= (8. * how_many_neighbors); // this is a pretty cool way to normalize the degree to <0,1>!
+  // logger_.warn(
+  //       "Frontier [{}, {}] occ_deg {:.4f}, neighbors checked: {}, total {}",
+  //       col,row,
+  //       f.nearby_occupancy_degree,
+  //       how_many_neighbors, k);
 }
 
 std::optional<Frontier> WFDProcessor::selectBest(
@@ -527,7 +552,7 @@ std::optional<Frontier> WFDProcessor::selectBest(
     if (center_pose) {
       double norm_center_dist = center_pose->distanceTo(f.centroid) / max_center_dist;
       f.score -= w[3] * norm_center_dist;
-      logger_.debug(
+      logger_.warn(
         "  Frontier [x {:.1f},y {:.1f}]: size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, center_dist={:.2f}, occ_deg={:.3f}, score={:.3f}",
         f.centroid.x, f.centroid.y,
         f.size, dist,
@@ -536,11 +561,12 @@ std::optional<Frontier> WFDProcessor::selectBest(
         f.nearby_occupancy_degree,
         f.score);
     } else {
-      logger_.debug(
-        "  Frontier [x {:.1f},y {:.1f}]: size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, score={:.3f}",
+      logger_.warn(
+        "  Frontier [x {:.1f},y {:.1f}]: size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, occ_deg={:.3f}, score={:.3f}",
         f.centroid.x, f.centroid.y,
         f.size, dist,
         std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
+        f.nearby_occupancy_degree,
         f.score);
     }
   }
