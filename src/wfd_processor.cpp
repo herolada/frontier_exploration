@@ -1,4 +1,5 @@
 #include "wfd_processor.hpp"
+#include "information_gain.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -513,7 +514,7 @@ std::optional<Frontier> WFDProcessor::selectBest(
   if (frontiers.empty()) return std::nullopt;
 
   // Normalisation factors
-  double max_info = 0.0;
+  double max_info = 1.0;
   double max_dist = 0.0;
   double max_yaw_diff = 3.14;
   double max_center_dist = 0.0;
@@ -521,7 +522,6 @@ std::optional<Frontier> WFDProcessor::selectBest(
   
   for (auto & f : frontiers) {
     get_near_occupancy_degree(f, grid);
-    max_info = std::max(max_info, f.size); // TODO replace this with something better than information gain == number of frontier cells connected to this component.
     max_dist = std::max(max_dist, robot_pos.distanceTo(f.centroid));
     // max_yaw_diff = std::max(max_yaw_diff, std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw));
     if (center_pose) {
@@ -543,28 +543,30 @@ std::optional<Frontier> WFDProcessor::selectBest(
     if (dist < params_.min_frontier_dist) {
       continue;
     }
-    double norm_info = std::pow(f.size / max_info, exp);
+    double info_gain = approximateInfoGain(&logger_, f.centroid, grid, params_.sensor_range, 32);
+    double norm_info = info_gain / max_info;
     double norm_dist = dist / max_dist;
     double norm_yaw_diff = std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw) / max_yaw_diff;
     double norm_occ_deg = f.nearby_occupancy_degree / max_occ_deg;
+    
     f.score = w[0] * norm_info - w[1] * norm_dist - w[2] * norm_yaw_diff - w[4] * norm_occ_deg;
 
     if (center_pose) {
       double norm_center_dist = center_pose->distanceTo(f.centroid) / max_center_dist;
       f.score -= w[3] * norm_center_dist;
       logger_.warn(
-        "  Frontier [x {:.1f},y {:.1f}]: size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, center_dist={:.2f}, occ_deg={:.3f}, score={:.3f}",
+        "  Frontier [x {:.1f},y {:.1f}]: info={:.3f}, size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, center_dist={:.2f}, occ_deg={:.3f}, score={:.3f}",
         f.centroid.x, f.centroid.y,
-        f.size, dist,
+        norm_info, f.size, dist,
         std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
         center_pose->distanceTo(f.centroid),
         f.nearby_occupancy_degree,
         f.score);
     } else {
       logger_.warn(
-        "  Frontier [x {:.1f},y {:.1f}]: size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, occ_deg={:.3f}, score={:.3f}",
+        "  Frontier [x {:.1f},y {:.1f}]: info={:.3f}, size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, occ_deg={:.3f}, score={:.3f}",
         f.centroid.x, f.centroid.y,
-        f.size, dist,
+        norm_info, f.size, dist,
         std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
         f.nearby_occupancy_degree,
         f.score);

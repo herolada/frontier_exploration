@@ -8,7 +8,7 @@
     # ── Timing ───────────────────────────────────────────────────────────
     loop_rate_hz: 1.0          # main exploration loop frequency (Hz)
     map_timeout_s: 5.0         # seconds to wait for a fresh map message
-    nav_goal_timeout_s: 60.0   # per-goal navigation timeout (seconds)
+    nav_goal_timeout_s: 60.0   # per-goal navigation timeout (seconds) // only applied if send_action == true
     tf_timeout_s: 1.0          # TF lookup timeout (seconds)
 
     # ── Visualisation ────────────────────────────────────────────────────
@@ -29,17 +29,17 @@
       occ_threshold: 50         # kept for reference; currently any val >= free_threshold is obstacle
 
       # Frontier filtering
-      min_frontier_size: 1      # minimum frontier cells to consider (filters noise)
-      min_frontier_dist: 3.0      # minimum frontier cells to consider (filters noise)
+      min_frontier_size: 3      # minimum frontier cells to consider (filters noise)
+      min_frontier_dist: 3.0    # minimum distance to frontier (keep higher than commander's exploration_goal_reached_dist)!!
       
       frontier_near_occupancy_distance: 2.4
 
       # Frontier splitting via k-means.
       # n_r = 1 + floor( f / (1.8 * D) + 0.5 )
       # where f = frontier cell count, D = sensor_range (metres).
-      sensor_range: 5.0         # sensor range D in metres (e.g. lidar max range)
+      sensor_range: 12.0         # sensor range D in metres (e.g. lidar max range)
       kmeans_max_iter: 100      # k-means iteration cap
 
-      # Goal selection: score = w[0] * norm_info_gain^exponent + w[1] * norm_distance + w[2] * norm_yaw_diff + w[3] * norm_center_dist
-      weights: [0.5, 1., 2., 1., 3.] # info gain, dist to robot, yaw diff, dist to exploration point, occupancy degree
-      info_gain_exponent: 1.0
+      # Goal selection: score = w[0] * norm_info_gain^exponent - w[1] * norm_distance - w[2] * norm_yaw_diff - w[3] * norm_center_dist - w[4] * local_occupancy_degree
+      weights: [2., 1., 2., 1., 3.] # info gain, dist to robot, yaw diff, dist to exploration point, occupancy degree
+      info_gain_exponent: 1.0 # UNUSED

@@ -113,9 +113,8 @@ struct WFDParams
   // K-means convergence
   int    kmeans_max_iter{100};  // maximum k-means iterations per frontier
 
-  // Goal selection
-  std::vector<double> weights{0., 1., 0.5}; // weight: score = w[0] * norm_info_gain^exponent + w[1] * norm_distance + w[2] * norm_yaw_diff
-                                //  info_gain normalised by max, distance normalised by max
+  // Goal selection: score = w[0] * norm_info_gain^exponent - w[1] * norm_distance - w[2] * norm_yaw_diff - w[3] * norm_center_dist - w[4] * local_occupancy_degree
+  std::vector<double> weights{0.5, 1., 2., 1., 1.};
   double info_gain_exponent{1.0}; // raise info_gain to this power before scoring
 };
 

@@ -1,5 +1,6 @@
 #include "ros_interface.hpp"
 #include "frontier_exploration/srv/set_pose.hpp"
+#include "polygon_helpers.hpp"
 
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -60,6 +61,16 @@ ROSInterface::ROSInterface(rclcpp::Node::SharedPtr node)
     std::bind(&ROSInterface::setExplorationCenterCallback, this,
                 std::placeholders::_1, std::placeholders::_2));
 
+  // Exploration polygon publisher
+  exploration_polygon_pub_ = node_->create_publisher<geometry_msgs::msg::PolygonStamped>(
+    "~/exploration_polygon", rclcpp::QoS(1).transient_local());
+
+  // Service server for setting polygon in which to explore
+  set_exploration_polygon_server_ = node_->create_service<frontier_exploration::srv::SetPolygon>(
+    "~/set_exploration_polygon",
+    std::bind(&ROSInterface::setExplorationPolygonCallback, this,
+                std::placeholders::_1, std::placeholders::_2));
+
 
   // WFD processor
   wfd_processor_ = std::make_unique<wfd::WFDProcessor>(params_.wfd, logger_);
@@ -114,6 +125,26 @@ void ROSInterface::setExplorationCenterCallback(
   logger_.info("Setting exploration center to ({}, {}).",req->pose.pose.position.x,req->pose.pose.position.y);
   exploration_center_ = req->pose;
   exploration_center_pub_->publish(req->pose);
+}
+
+void ROSInterface::setExplorationPolygonCallback(
+  const std::shared_ptr<frontier_exploration::srv::SetPolygon::Request> req,
+  std::shared_ptr<frontier_exploration::srv::SetPolygon::Response>)
+{
+  if (req->polygon.header.frame_id == "") {
+    logger_.error("Cannot set exploration polygon to a PolygonStamped without frame_id.");
+    return;
+  }
+  
+  std::stringstream ss;
+  for (const auto& p : req->polygon.polygon.points)
+  {
+      ss << "(" << p.x << ", " << p.y << ") ";
+  }
+  logger_.info("Setting exploration polygon to {}.", ss.str());
+
+  exploration_polygon_ = req->polygon;
+  exploration_polygon_pub_->publish(req->polygon);
 }
 
 // ============================================================
@@ -438,6 +469,8 @@ void ROSInterface::publishFrontierMarkers(
   marker_pub_->publish(ma);
 }
 
+
+
 // ============================================================
 //  explorationLoop  (runs in its own thread)
 // ============================================================
@@ -471,24 +504,84 @@ void ROSInterface::explorationLoop()
 
     // Transform the exploration center pose to the map frame.
     geometry_msgs::msg::PoseStamped exploration_center_map;
+    wfd::Pose2D exploration_center_map_pose;
     std::optional<wfd::Pose2D> center_pose;
 
-    
     if (exploration_center_.has_value()) {
-      try {
-        auto tf = tf_buffer_->lookupTransform(exploration_center_.value().header.frame_id, map_frame,
-          tf2::TimePointZero,
-          tf2::durationFromSec(params_.tf_timeout_s));
-        tf2::doTransform(exploration_center_.value(), exploration_center_map, tf);
-
-        wfd::Pose2D exploration_center_map_pose;
-        exploration_center_map_pose.x = exploration_center_map.pose.position.x;
-        exploration_center_map_pose.y = exploration_center_map.pose.position.y;
+      if (exploration_center_.value().header.frame_id == map_frame) {
+        // already in the correct frame
+        exploration_center_map_pose.x = exploration_center_.value().pose.position.x;
+        exploration_center_map_pose.y = exploration_center_.value().pose.position.y;
         exploration_center_map_pose.yaw = 0.;
         center_pose = exploration_center_map_pose;
 
-        logger_.info("Exploration center: (x {:.2f}, y {:.2f}, yaw {:.2f}) in '{}'",
-          center_pose->x, center_pose->y, center_pose->yaw, map_frame);
+        logger_.info("Exploration center already in the correct frame '{}': (x {:.2f}, y {:.2f}, yaw {:.2f})",
+            map_frame, center_pose->x, center_pose->y, center_pose->yaw);
+      } else {
+        try { 
+          auto tf = tf_buffer_->lookupTransform(exploration_center_.value().header.frame_id, map_frame,
+            tf2::TimePointZero,
+            tf2::durationFromSec(params_.tf_timeout_s));
+          tf2::doTransform(exploration_center_.value(), exploration_center_map, tf);
+
+          exploration_center_map_pose.x = exploration_center_map.pose.position.x;
+          exploration_center_map_pose.y = exploration_center_map.pose.position.y;
+          exploration_center_map_pose.yaw = 0.;
+          center_pose = exploration_center_map_pose;
+
+          logger_.info("Exploration center: (x {:.2f}, y {:.2f}, yaw {:.2f}) in '{}'",
+            center_pose->x, center_pose->y, center_pose->yaw, map_frame);
+        } catch (const tf2::TransformException & ex) {
+          logger_.warn("TF lookup failed: {}", ex.what());
+        }
+      }
+    }
+
+    // Transform exploration polygon
+    geometry_msgs::msg::PolygonStamped polygon_transformed;
+    std::vector<wfd::Pose2D> polygon_poses_tmp;
+    std::optional<std::vector<wfd::Pose2D>> polygon_poses;
+
+    if (exploration_polygon_.has_value()) {
+      try {
+        if (exploration_polygon_.value().header.frame_id == map_frame) {
+          // already in the correct frame
+
+          for (auto &point : exploration_polygon_.value().polygon.points) {
+            wfd::Pose2D polygon_pose_tmp;
+            polygon_pose_tmp.x = point.x;
+            polygon_pose_tmp.x = point.y;
+            polygon_pose_tmp.x = 0.;
+            polygon_poses_tmp.push_back(polygon_pose_tmp);
+          }
+          polygon_poses = polygon_poses_tmp;
+
+          logger_.info("Polygon already in the correct frame '{}'",
+              map_frame);
+        } else {
+          try { 
+            auto tf = tf_buffer_->lookupTransform(exploration_polygon_.value().header.frame_id, map_frame,
+              tf2::TimePointZero,
+              tf2::durationFromSec(params_.tf_timeout_s));
+
+            tf2::doTransform(exploration_polygon_.value(), polygon_transformed, tf);
+            
+            for (auto &point : polygon_transformed.polygon.points) {
+              wfd::Pose2D polygon_pose_tmp;
+              polygon_pose_tmp.x = point.x;
+              polygon_pose_tmp.x = point.y;
+              polygon_pose_tmp.x = 0.;
+              polygon_poses_tmp.push_back(polygon_pose_tmp);
+            }
+            polygon_poses = polygon_poses_tmp;
+
+            logger_.info("Exploration center transformed to '{}'",
+              map_frame);
+          } catch (const tf2::TransformException & ex) {
+            logger_.warn("TF lookup failed: {}", ex.what());
+          }
+        }
+
       } catch (const tf2::TransformException & ex) {
         logger_.warn("TF lookup failed: {}", ex.what());
       }
@@ -531,6 +624,12 @@ void ROSInterface::explorationLoop()
       std::this_thread::sleep_for(std::chrono::duration<double>(2.0));
       continue;
     }
+
+    // ------------------------------------------------------------------
+    // 4.5 (optional) Filter frontiers outside of polygon.
+    // ------------------------------------------------------------------
+    if (polygon_poses.has_value())
+      wfd::remove_frontiers_outside_polygon(polygon_poses.value(), frontiers);
 
     // ------------------------------------------------------------------
     // 5. Select best frontier

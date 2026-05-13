@@ -11,8 +11,10 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/polygon_stamped.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include "frontier_exploration/srv/set_pose.hpp"
+#include "frontier_exploration/srv/set_polygon.hpp"
 
 #include <atomic>
 #include <mutex>
@@ -83,6 +85,10 @@ private:
   void setExplorationCenterCallback(
     const std::shared_ptr<srv::SetPose::Request> req,
     std::shared_ptr<srv::SetPose::Response> res);
+  
+  void setExplorationPolygonCallback(
+    const std::shared_ptr<srv::SetPolygon::Request> req,
+    std::shared_ptr<srv::SetPolygon::Response> res);
 
   // -----------------------------------------------------------------------
   // Exploration loop (runs in its own thread)
@@ -152,6 +158,11 @@ private:
   rclcpp::Service<frontier_exploration::srv::SetPose>::SharedPtr set_exploration_center_server_;
   std::optional<geometry_msgs::msg::PoseStamped> exploration_center_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr exploration_center_pub_;
+
+  // Explorationg polygon service
+  rclcpp::Service<frontier_exploration::srv::SetPolygon>::SharedPtr set_exploration_polygon_server_;
+  std::optional<geometry_msgs::msg::PolygonStamped> exploration_polygon_;
+  rclcpp::Publisher<geometry_msgs::msg::PolygonStamped>::SharedPtr exploration_polygon_pub_;
 
   // Core logic
   std::unique_ptr<wfd::WFDProcessor> wfd_processor_;
