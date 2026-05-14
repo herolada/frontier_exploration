@@ -550,8 +550,7 @@ void ROSInterface::explorationLoop()
           for (auto &point : exploration_polygon_.value().polygon.points) {
             wfd::Pose2D polygon_pose_tmp;
             polygon_pose_tmp.x = point.x;
-            polygon_pose_tmp.x = point.y;
-            polygon_pose_tmp.x = 0.;
+            polygon_pose_tmp.y = point.y;
             polygon_poses_tmp.push_back(polygon_pose_tmp);
           }
           polygon_poses = polygon_poses_tmp;
@@ -569,13 +568,12 @@ void ROSInterface::explorationLoop()
             for (auto &point : polygon_transformed.polygon.points) {
               wfd::Pose2D polygon_pose_tmp;
               polygon_pose_tmp.x = point.x;
-              polygon_pose_tmp.x = point.y;
-              polygon_pose_tmp.x = 0.;
+              polygon_pose_tmp.y = point.y;
               polygon_poses_tmp.push_back(polygon_pose_tmp);
             }
             polygon_poses = polygon_poses_tmp;
 
-            logger_.info("Exploration center transformed to '{}'",
+            logger_.info("Exploration polygon transformed to '{}'",
               map_frame);
           } catch (const tf2::TransformException & ex) {
             logger_.warn("TF lookup failed: {}", ex.what());
