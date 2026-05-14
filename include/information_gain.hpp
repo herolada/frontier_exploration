@@ -31,6 +31,7 @@ double approximateInfoGain(
     // No double dips.
     int square_side = 2 * max_cells + 1;
     std::vector<bool> visited(square_side * square_side, false);
+    int visitable = 0;
     
     int info_gain = 0;
 
@@ -60,17 +61,24 @@ double approximateInfoGain(
             int err = ax / 2;
             for (int i = 0; i <= ax; ++i)
             {   
+                int vi = x-x0+max_cells + (y-y0+max_cells)*square_side;
+                
                 // delete this if everything works:
-                if(x-x0+max_cells + (y-y0+max_cells)*square_side >= 0 && x-x0+max_cells + (y-y0+max_cells)*square_side < square_side * square_side) {
-                    logger->error("Adame mas tam chybu {}.", x-x0+max_cells + (y-y0+max_cells)*square_side);
+                if(!(vi >= 0 && vi < square_side * square_side)) {
+                    logger->error("Adame mas tam chybu {}.", vi);
                 }
 
-
                 CellState s = grid.at(x, y);
-                if (s == CellState::OBSTACLE)  break;
-                if (s == CellState::UNEXPLORED && !visited[x-x0+max_cells + (y-y0+max_cells)*square_side]) {
-                    ++info_gain;
-                    visited[x-x0+max_cells + (y-y0+max_cells)*square_side] = true;
+                if (s == CellState::OBSTACLE) {
+                    visitable += ax + 1 - i;
+                    break;
+                }
+                if (!visited[vi]) {
+                    ++visitable;
+                    visited[vi] = true;
+                    if (s == CellState::UNEXPLORED) {
+                        ++info_gain;
+                    }
                 }   
                 err -= ay;
                 if (err < 0) { y += sy; err += ax; }
@@ -83,17 +91,24 @@ double approximateInfoGain(
             int err = ay / 2;
             for (int i = 0; i <= ay; ++i)
             {
+                int vi = x-x0+max_cells + (y-y0+max_cells)*square_side;
+                
                 // delete this if everything works:
-                if(x-x0+max_cells + (y-y0+max_cells)*square_side >= 0 && x-x0+max_cells + (y-y0+max_cells)*square_side < square_side * square_side) {
-                    logger->error("Adame mas tam chybu {}.", x-x0+max_cells + (y-y0+max_cells)*square_side);
+                if(!(vi >= 0 && vi < square_side * square_side)) {
+                    logger->error("Adame mas tam chybu {}.", vi);
                 }
 
-                
                 CellState s = grid.at(x, y);
-                if (s == CellState::OBSTACLE)  break;
-                if (s == CellState::UNEXPLORED && !visited[x-x0+max_cells + (y-y0+max_cells)*square_side]) {
-                    ++info_gain;
-                    visited[x-x0+max_cells + (y-y0+max_cells)*square_side] = true;
+                if (s == CellState::OBSTACLE) {
+                    visitable += ay + 1 - i;
+                    break;
+                }
+                if (!visited[vi]) {
+                    ++visitable;
+                    visited[vi] = true;
+                    if (s == CellState::UNEXPLORED) {
+                        ++info_gain;
+                    }
                 }   
                 err -= ax;
                 if (err < 0) { x += sx; err += ay; }
@@ -102,6 +117,6 @@ double approximateInfoGain(
         }
     }
 
-    return static_cast<double>(info_gain) / (max_cells * num_rays);
+    return visitable>0 ? static_cast<double>(info_gain)/visitable : 0.0;
 }
 } // namespace wfd
