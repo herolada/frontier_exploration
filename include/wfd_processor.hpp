@@ -62,7 +62,8 @@ public:
    * @brief Select the best frontier given robot position.
    *
    * Scores each frontier as:
-   *   score = w[0] * norm_info_gain^exponent + w[1] * norm_distance + w[2] * norm_yaw_diff
+   *   score = w[0] * norm_info_gain^exponent - w[1] * norm_distance - w[2] * norm_yaw_diff
+   * Frontiers below `min_norm_info_gain` or above `max_norm_occ_deg` are skipped.
    *
    * @param frontiers detected frontiers
    * @param robot_pos robot world position

@@ -1,7 +1,10 @@
 #include "ros_interface.hpp"
 #include "frontier_exploration/srv/set_pose.hpp"
+#include "frontier_exploration/srv/add_dead_zone.hpp"
+#include "frontier_exploration/srv/clear_dead_zones.hpp"
 #include "polygon_helpers.hpp"
 
+#include <algorithm>
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -10,6 +13,7 @@
 
 #include <chrono>
 #include <future>
+#include <sstream>
 #include <stdexcept>
 
 using namespace std::chrono_literals;
@@ -69,6 +73,22 @@ ROSInterface::ROSInterface(rclcpp::Node::SharedPtr node)
   set_exploration_polygon_server_ = node_->create_service<frontier_exploration::srv::SetPolygon>(
     "~/set_exploration_polygon",
     std::bind(&ROSInterface::setExplorationPolygonCallback, this,
+                std::placeholders::_1, std::placeholders::_2));
+
+  // Dead zones publisher
+  dead_zones_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
+    "~/dead_zones", rclcpp::QoS(1).transient_local());
+
+  // Service server for adding dead zones
+  add_dead_zone_server_ = node_->create_service<frontier_exploration::srv::AddDeadZone>(
+    "~/add_dead_zone",
+    std::bind(&ROSInterface::addDeadZoneCallback, this,
+                std::placeholders::_1, std::placeholders::_2));
+
+  // Service server for clearing dead zones
+  clear_dead_zones_server_ = node_->create_service<frontier_exploration::srv::ClearDeadZones>(
+    "~/clear_dead_zones",
+    std::bind(&ROSInterface::clearDeadZonesCallback, this,
                 std::placeholders::_1, std::placeholders::_2));
 
 
@@ -147,6 +167,85 @@ void ROSInterface::setExplorationPolygonCallback(
   exploration_polygon_pub_->publish(req->polygon);
 }
 
+void ROSInterface::addDeadZoneCallback(
+  const std::shared_ptr<frontier_exploration::srv::AddDeadZone::Request> req,
+  std::shared_ptr<frontier_exploration::srv::AddDeadZone::Response> res)
+{
+  if (req->pose.header.frame_id.empty()) {
+    logger_.error("Cannot add a dead zone without a frame_id.");
+    res->success = false;
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(dead_zones_mutex_);
+    dead_zones_.push_back(req->pose);
+  }
+
+  logger_.info(
+    "Added dead zone at ({:.2f}, {:.2f}) in '{}'",
+    req->pose.pose.position.x,
+    req->pose.pose.position.y,
+    req->pose.header.frame_id);
+  res->success = true;
+
+  visualization_msgs::msg::MarkerArray dead_zone_markers;
+
+  {
+    std::lock_guard<std::mutex> lock(dead_zones_mutex_);
+
+    for (size_t i = 0; i < dead_zones_.size(); ++i) {
+      const auto & pose_stamped = dead_zones_[i];
+
+      visualization_msgs::msg::Marker marker;
+      marker.header = pose_stamped.header;
+      marker.ns = "dead_zones";
+      marker.id = static_cast<int>(i);
+
+      marker.type = visualization_msgs::msg::Marker::CYLINDER;
+      marker.action = visualization_msgs::msg::Marker::ADD;
+
+      marker.pose = pose_stamped.pose;
+
+      // Small height so it appears as a flat disk.
+      marker.pose.position.z = 0.05;
+      marker.scale.x = 2.0 * params_.dead_zone_min_distance;
+      marker.scale.y = 2.0 * params_.dead_zone_min_distance;
+      marker.scale.z = 0.1;
+
+      marker.color.r = 1.0f;
+      marker.color.g = 0.0f;
+      marker.color.b = 0.0f;
+      marker.color.a = 0.5f;
+
+      marker.lifetime = rclcpp::Duration::from_seconds(0.0);  // persistent
+
+      dead_zone_markers.markers.push_back(std::move(marker));
+    }
+  }
+
+  dead_zones_pub_->publish(dead_zone_markers);
+}
+
+void ROSInterface::clearDeadZonesCallback(
+  const std::shared_ptr<frontier_exploration::srv::ClearDeadZones::Request>,
+  std::shared_ptr<frontier_exploration::srv::ClearDeadZones::Response>)
+{
+  {
+    std::lock_guard<std::mutex> lock(dead_zones_mutex_);
+    dead_zones_.clear();
+  }
+
+  visualization_msgs::msg::MarkerArray markers;
+  visualization_msgs::msg::Marker marker;
+  marker.action = visualization_msgs::msg::Marker::DELETEALL;
+  markers.markers.push_back(marker);
+
+  dead_zones_pub_->publish(markers);
+
+  logger_.info("Cleared all stored dead zones");
+}
+
 // ============================================================
 //  loadParams
 // ============================================================
@@ -166,6 +265,7 @@ ExplorerParams ROSInterface::loadParams()
   p.send_action      = node_->declare_parameter("send_action",       p.send_action);
   p.publish_best_frontier = node_->declare_parameter("publish_best_frontier", p.publish_best_frontier);
   p.best_frontier_topic = node_->declare_parameter("best_frontier_topic", p.best_frontier_topic);
+  p.dead_zone_min_distance = node_->declare_parameter("dead_zone_min_distance", p.dead_zone_min_distance);
 
   p.wfd.free_threshold          = node_->declare_parameter("wfd.free_threshold",          p.wfd.free_threshold);
   p.wfd.occ_threshold           = node_->declare_parameter("wfd.occ_threshold",           p.wfd.occ_threshold);
@@ -176,8 +276,50 @@ ExplorerParams ROSInterface::loadParams()
   p.wfd.kmeans_max_iter         = node_->declare_parameter("wfd.kmeans_max_iter",         p.wfd.kmeans_max_iter);
   p.wfd.weights                 = node_->declare_parameter("wfd.weights",                 p.wfd.weights);
   p.wfd.info_gain_exponent      = node_->declare_parameter("wfd.info_gain_exponent",      p.wfd.info_gain_exponent);
+  p.wfd.min_norm_info_gain      = node_->declare_parameter("wfd.min_norm_info_gain",      p.wfd.min_norm_info_gain);
+  p.wfd.max_norm_occ_deg        = node_->declare_parameter("wfd.max_norm_occ_deg",        p.wfd.max_norm_occ_deg);
 
   return p;
+}
+
+// ============================================================
+//  getDeadZoneCenters
+// ============================================================
+std::vector<wfd::Pose2D> ROSInterface::getDeadZoneCenters(const std::string & map_frame)
+{
+  std::vector<geometry_msgs::msg::PoseStamped> dead_zones_copy;
+  {
+    std::lock_guard<std::mutex> lock(dead_zones_mutex_);
+    dead_zones_copy = dead_zones_;
+  }
+
+  std::vector<wfd::Pose2D> dead_zone_centers;
+  dead_zone_centers.reserve(dead_zones_copy.size());
+
+  for (const auto & dead_zone : dead_zones_copy) {
+    try {
+      geometry_msgs::msg::PoseStamped dead_zone_map;
+      if (dead_zone.header.frame_id == map_frame) {
+        dead_zone_map = dead_zone;
+      } else {
+        auto tf = tf_buffer_->lookupTransform(
+          map_frame, dead_zone.header.frame_id, tf2::TimePointZero,
+          tf2::durationFromSec(params_.tf_timeout_s));
+        tf2::doTransform(dead_zone, dead_zone_map, tf);
+      }
+
+      wfd::Pose2D center;
+      center.x = dead_zone_map.pose.position.x;
+      center.y = dead_zone_map.pose.position.y;
+      dead_zone_centers.push_back(center);
+    } catch (const tf2::TransformException & ex) {
+      logger_.warn(
+        "Could not transform dead zone from '{}' to '{}': {}",
+        dead_zone.header.frame_id, map_frame, ex.what());
+    }
+  }
+
+  return dead_zone_centers;
 }
 
 // ============================================================
@@ -628,6 +770,35 @@ void ROSInterface::explorationLoop()
     // ------------------------------------------------------------------
     if (polygon_poses.has_value())
       wfd::remove_frontiers_outside_polygon(polygon_poses.value(), frontiers);
+
+    // ------------------------------------------------------------------
+    // 4.6 Filter frontiers inside dead zones.
+    // ------------------------------------------------------------------
+    const auto dead_zone_centers = getDeadZoneCenters(map_frame);
+    if (!dead_zone_centers.empty()) {
+      const double dead_zone_min_distance_sq = params_.dead_zone_min_distance * params_.dead_zone_min_distance;
+      const auto before_count = frontiers.size();
+
+      frontiers.erase(
+        std::remove_if(frontiers.begin(), frontiers.end(),
+          [&dead_zone_centers, dead_zone_min_distance_sq](const wfd::Frontier & frontier) {
+            return std::any_of(
+              dead_zone_centers.begin(), dead_zone_centers.end(),
+              [&frontier, dead_zone_min_distance_sq](const wfd::Pose2D & dead_zone) {
+                const double dx = frontier.centroid.x - dead_zone.x;
+                const double dy = frontier.centroid.y - dead_zone.y;
+                return (dx * dx + dy * dy) < dead_zone_min_distance_sq;
+              });
+          }),
+        frontiers.end());
+
+      const auto removed_count = before_count - frontiers.size();
+      if (removed_count > 0) {
+        logger_.info(
+          "Dead-zone filter removed {} frontier(s) using {} stored dead zone(s)",
+          removed_count, dead_zone_centers.size());
+      }
+    }
 
     // ------------------------------------------------------------------
     // 5. Select best frontier

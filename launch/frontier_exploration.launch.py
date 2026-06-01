@@ -1,12 +1,16 @@
 """
 Launch file for frontier_exploration.
 
-All tunable parameters are exposed as launch arguments so they can be
-overridden from the command line, e.g.:
+The launch file lets you swap the active parameter YAML file and toggle
+`use_sim_time` from the command line, e.g.:
 
   ros2 launch frontier_exploration frontier_exploration.launch.py  \\
-      map_topic:=/my_map  robot_frame:=base_footprint  \\
-      wfd.lambda:=0.7  nav_goal_timeout_s:=90.0
+      config_file:=/path/to/frontier_exploration_husky.yaml  \\
+      use_sim_time:=true
+
+The frontier-selection thresholds live in the selected YAML file under
+`wfd.min_norm_info_gain` and `wfd.max_norm_occ_deg`, and dead-zone filtering
+is configured via `dead_zone_min_distance`.
 """
 
 from launch import LaunchDescription
@@ -20,7 +24,7 @@ def generate_launch_description():
     pkg_share = FindPackageShare("frontier_exploration")
     default_config = PathJoinSubstitution([pkg_share, "params", "frontier_exploration_helhest.yaml"])
 
-    # ── Declare every tuneable as a launch argument ──────────────────────
+    # ── Declare the launch arguments we expose directly ──────────────────
 
     declared_args = [
         # Config file (can be swapped entirely)

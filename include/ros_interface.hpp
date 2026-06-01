@@ -15,6 +15,8 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 #include "frontier_exploration/srv/set_pose.hpp"
 #include "frontier_exploration/srv/set_polygon.hpp"
+#include "frontier_exploration/srv/add_dead_zone.hpp"
+#include "frontier_exploration/srv/clear_dead_zones.hpp"
 
 #include <atomic>
 #include <mutex>
@@ -43,6 +45,9 @@ struct ExplorerParams
   bool send_action{false};
   bool publish_best_frontier{true};
   std::string best_frontier_topic{"~/goal"};
+
+  // Dead-zone filtering
+  double dead_zone_min_distance{3.0};
 
   // Visualisation
   bool publish_markers{true};
@@ -89,6 +94,14 @@ private:
   void setExplorationPolygonCallback(
     const std::shared_ptr<srv::SetPolygon::Request> req,
     std::shared_ptr<srv::SetPolygon::Response> res);
+
+  void addDeadZoneCallback(
+    const std::shared_ptr<srv::AddDeadZone::Request> req,
+    std::shared_ptr<srv::AddDeadZone::Response> res);
+
+  void clearDeadZonesCallback(
+    const std::shared_ptr<srv::ClearDeadZones::Request> req,
+    std::shared_ptr<srv::ClearDeadZones::Response> res);
 
   // -----------------------------------------------------------------------
   // Exploration loop (runs in its own thread)
@@ -163,6 +176,15 @@ private:
   rclcpp::Service<frontier_exploration::srv::SetPolygon>::SharedPtr set_exploration_polygon_server_;
   std::optional<geometry_msgs::msg::PolygonStamped> exploration_polygon_;
   rclcpp::Publisher<geometry_msgs::msg::PolygonStamped>::SharedPtr exploration_polygon_pub_;
+
+  // Dead-zone service
+  rclcpp::Service<frontier_exploration::srv::AddDeadZone>::SharedPtr add_dead_zone_server_;
+  rclcpp::Service<frontier_exploration::srv::ClearDeadZones>::SharedPtr clear_dead_zones_server_;
+  std::vector<geometry_msgs::msg::PoseStamped> dead_zones_;
+  std::mutex dead_zones_mutex_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr dead_zones_pub_;
+
+  std::vector<wfd::Pose2D> getDeadZoneCenters(const std::string & map_frame);
 
   // Core logic
   std::unique_ptr<wfd::WFDProcessor> wfd_processor_;

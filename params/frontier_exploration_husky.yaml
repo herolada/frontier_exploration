@@ -19,6 +19,9 @@
     send_action: false
     publish_best_frontier: true
 
+    # ── Dead-zone filtering ─────────────────────────────────────────────
+    dead_zone_min_distance: 3.0   # frontier centroids closer than this to any stored dead zone are filtered out (metres)
+
     # ── WFD parameters ───────────────────────────────────────────────────
     wfd:
       # Occupancy-grid thresholding
@@ -43,3 +46,5 @@
       # Goal selection: score = w[0] * norm_info_gain^exponent - w[1] * norm_distance - w[2] * norm_yaw_diff - w[3] * norm_center_dist - w[4] * local_occupancy_degree
       weights: [2., 1., 2., 1., 3.] # info gain, dist to robot, yaw diff, dist to exploration point, occupancy degree
       info_gain_exponent: 1.0 # UNUSED
+      min_norm_info_gain: 0.0   # hard floor for the normalised info gain score
+      max_norm_occ_deg: 1.0     # hard ceiling for the normalised occupancy degree

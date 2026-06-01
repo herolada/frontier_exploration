@@ -116,6 +116,10 @@ struct WFDParams
   // Goal selection: score = w[0] * norm_info_gain^exponent - w[1] * norm_distance - w[2] * norm_yaw_diff - w[3] * norm_center_dist - w[4] * local_occupancy_degree
   std::vector<double> weights{0.5, 1., 2., 1., 1.};
   double info_gain_exponent{1.0}; // raise info_gain to this power before scoring
+
+  // Hard filters applied after normalisation in selectBest().
+  double min_norm_info_gain{0.0};   // discard frontiers below this normalised info-gain floor
+  double max_norm_occ_deg{1.0};     // discard frontiers above this normalised occupancy ceiling
 };
 
 }  // namespace wfd

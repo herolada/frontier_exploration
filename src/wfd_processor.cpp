@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <map>
+#include <limits>
 #include <queue>
 #include <stdexcept>
 
@@ -530,24 +531,44 @@ std::optional<Frontier> WFDProcessor::selectBest(
   }
 
 
-  if (max_info < 1e-9) max_info = 1.0;
+  // if (max_info < 1e-9) max_info = 1.0;
   if (max_dist < 1e-9) max_dist = 1.0;
   // if (max_yaw_diff < 1e-9) max_yaw_diff = 1.0;
   if (max_center_dist < 1e-9) max_center_dist = 1.0;
 
   const std::vector<double> w = params_.weights;
-  const double exp = params_.info_gain_exponent;
 
-  for (auto & f : frontiers) {
+  std::optional<size_t> best_idx;
+  double best_score = std::numeric_limits<double>::lowest();
+
+  for (size_t idx = 0; idx < frontiers.size(); ++idx) {
+    auto & f = frontiers[idx];
     double dist = robot_pos.distanceTo(f.centroid);
     if (dist < params_.min_frontier_dist) {
+      logger_.debug(
+        "  Frontier [x {:.1f},y {:.1f}] skipped: dist={:.2f} m < min_frontier_dist={:.2f}",
+        f.centroid.x, f.centroid.y, dist, params_.min_frontier_dist);
       continue;
     }
+
     double info_gain = approximateInfoGain(&logger_, f.centroid, grid, params_.sensor_range, 32);
     double norm_info = info_gain / max_info;
+    if (norm_info < params_.min_norm_info_gain) {
+      logger_.debug(
+        "  Frontier [x {:.1f},y {:.1f}] skipped: norm_info={:.3f} < min_norm_info_gain={:.3f}",
+        f.centroid.x, f.centroid.y, norm_info, params_.min_norm_info_gain);
+      continue;
+    }
+
     double norm_dist = dist / max_dist;
     double norm_yaw_diff = std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw) / max_yaw_diff;
     double norm_occ_deg = f.nearby_occupancy_degree / max_occ_deg;
+    if (norm_occ_deg > params_.max_norm_occ_deg) {
+      logger_.debug(
+        "  Frontier [x {:.1f},y {:.1f}] skipped: norm_occ_deg={:.3f} > max_norm_occ_deg={:.3f}",
+        f.centroid.x, f.centroid.y, norm_occ_deg, params_.max_norm_occ_deg);
+      continue;
+    }
     
     f.score = w[0] * norm_info - w[1] * norm_dist - w[2] * norm_yaw_diff - w[4] * norm_occ_deg;
 
@@ -571,17 +592,24 @@ std::optional<Frontier> WFDProcessor::selectBest(
         f.nearby_occupancy_degree,
         f.score);
     }
+
+    if (!best_idx || f.score > best_score) {
+      best_idx = idx;
+      best_score = f.score;
+    }
   }
 
-  auto best_it = std::max_element(frontiers.begin(), frontiers.end(),
-    [](const Frontier & a, const Frontier & b){ return a.score < b.score; });
+  if (!best_idx) {
+    logger_.warn("WFD: no frontier passed the selection filters");
+    return std::nullopt;
+  }
 
   logger_.info("WFD: best frontier idx={}, size={:.0f}, score={:.3f}, centroid=({:.2f},{:.2f})",
-    std::distance(frontiers.begin(), best_it),
-    best_it->size, best_it->score,
-    best_it->centroid.x, best_it->centroid.y);
+    *best_idx,
+    frontiers[*best_idx].size, best_score,
+    frontiers[*best_idx].centroid.x, frontiers[*best_idx].centroid.y);
 
-  return *best_it;
+  return frontiers[*best_idx];
 }
 
 }  // namespace wfd

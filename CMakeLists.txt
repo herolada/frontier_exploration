@@ -30,6 +30,8 @@ find_package(tf2_geometry_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetPose.srv"
   "srv/SetPolygon.srv"
+  "srv/AddDeadZone.srv"
+  "srv/ClearDeadZones.srv"
   DEPENDENCIES geometry_msgs
 )
 
