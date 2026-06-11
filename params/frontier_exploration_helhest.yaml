@@ -22,6 +22,9 @@
     # ── Dead-zone filtering ─────────────────────────────────────────────
     dead_zone_min_distance: 3.0   # frontier centroids closer than this to any stored dead zone are filtered out (metres)
 
+    # ── Exploration polygon from file ────────────────────────────────────
+    # polygon_file: ""              # path to MGRS polygon file; activate via ~/load_polygon_from_file service
+
     # ── WFD parameters ───────────────────────────────────────────────────
     wfd:
       # Occupancy-grid thresholding

@@ -17,13 +17,16 @@
 #include "frontier_exploration/srv/set_polygon.hpp"
 #include "frontier_exploration/srv/add_dead_zone.hpp"
 #include "frontier_exploration/srv/clear_dead_zones.hpp"
+#include "frontier_exploration/srv/load_polygon_from_file.hpp"
 
+#include <array>
 #include <atomic>
 #include <mutex>
 #include <memory>
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace frontier_exploration
 {
@@ -48,6 +51,9 @@ struct ExplorerParams
 
   // Dead-zone filtering
   double dead_zone_min_distance{3.0};
+
+  // Polygon file
+  std::string polygon_file{""};
 
   // Visualisation
   bool publish_markers{true};
@@ -94,6 +100,10 @@ private:
   void setExplorationPolygonCallback(
     const std::shared_ptr<srv::SetPolygon::Request> req,
     std::shared_ptr<srv::SetPolygon::Response> res);
+
+  void loadPolygonFromFileCallback(
+    const std::shared_ptr<srv::LoadPolygonFromFile::Request> req,
+    std::shared_ptr<srv::LoadPolygonFromFile::Response> res);
 
   void addDeadZoneCallback(
     const std::shared_ptr<srv::AddDeadZone::Request> req,
@@ -172,10 +182,18 @@ private:
   std::optional<geometry_msgs::msg::PoseStamped> exploration_center_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr exploration_center_pub_;
 
-  // Explorationg polygon service
+  // Exploration polygon service (from PolygonStamped message)
   rclcpp::Service<frontier_exploration::srv::SetPolygon>::SharedPtr set_exploration_polygon_server_;
   std::optional<geometry_msgs::msg::PolygonStamped> exploration_polygon_;
   rclcpp::Publisher<geometry_msgs::msg::PolygonStamped>::SharedPtr exploration_polygon_pub_;
+
+  // Exploration polygon from file (stored in ECEF / 'earth' frame, double precision)
+  // Mutually exclusive with exploration_polygon_: whichever was set last is active.
+  rclcpp::Service<frontier_exploration::srv::LoadPolygonFromFile>::SharedPtr load_polygon_from_file_server_;
+  std::optional<std::vector<std::array<double, 3>>> polygon_ecef_;
+
+  // Parse MGRS polygon file; returns ECEF points or nullopt on error.
+  std::optional<std::vector<std::array<double, 3>>> parseMGRSFile(const std::string & path);
 
   // Dead-zone service
   rclcpp::Service<frontier_exploration::srv::AddDeadZone>::SharedPtr add_dead_zone_server_;

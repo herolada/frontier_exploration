@@ -23,6 +23,7 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     pkg_share = FindPackageShare("frontier_exploration")
     default_config = PathJoinSubstitution([pkg_share, "params", "frontier_exploration_helhest.yaml"])
+    elrob_polygon = PathJoinSubstitution([pkg_share, "params", "UTM_Mule_Recon_2026.txt"])
 
     # ── Declare the launch arguments we expose directly ──────────────────
 
@@ -37,7 +38,16 @@ def generate_launch_description():
             "use_sim_time",
             default_value="false",
             description="simulation/bag or not",
-        )
+        ),
+        DeclareLaunchArgument(
+            "polygon_file",
+            default_value=elrob_polygon,
+            description=(
+                "Path to an MGRS polygon file (one coordinate per line). "
+                "When non-empty this overrides the polygon_file YAML parameter. "
+                "The polygon is activated by calling the ~/load_polygon_from_file service."
+            ),
+        ),
     ]
     # ── Node ─────────────────────────────────────────────────────────────
     node = Node(
@@ -50,6 +60,7 @@ def generate_launch_description():
             # Load the YAML file first (provides defaults)
             LaunchConfiguration("config_file"),
             {"use_sim_time": LaunchConfiguration("use_sim_time")},
+            {"polygon_file": LaunchConfiguration("polygon_file")},
         ],
     )
 

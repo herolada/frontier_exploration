@@ -2,9 +2,15 @@
 #include "frontier_exploration/srv/set_pose.hpp"
 #include "frontier_exploration/srv/add_dead_zone.hpp"
 #include "frontier_exploration/srv/clear_dead_zones.hpp"
+#include "frontier_exploration/srv/load_polygon_from_file.hpp"
 #include "polygon_helpers.hpp"
 
+#include <GeographicLib/MGRS.hpp>
+#include <GeographicLib/UTMUPS.hpp>
+#include <GeographicLib/Geocentric.hpp>
+
 #include <algorithm>
+#include <fstream>
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -91,6 +97,11 @@ ROSInterface::ROSInterface(rclcpp::Node::SharedPtr node)
     std::bind(&ROSInterface::clearDeadZonesCallback, this,
                 std::placeholders::_1, std::placeholders::_2));
 
+  // Service server for loading exploration polygon from MGRS file
+  load_polygon_from_file_server_ = node_->create_service<frontier_exploration::srv::LoadPolygonFromFile>(
+    "~/load_polygon_from_file",
+    std::bind(&ROSInterface::loadPolygonFromFileCallback, this,
+                std::placeholders::_1, std::placeholders::_2));
 
   // WFD processor
   wfd_processor_ = std::make_unique<wfd::WFDProcessor>(params_.wfd, logger_);
@@ -155,7 +166,7 @@ void ROSInterface::setExplorationPolygonCallback(
     logger_.error("Cannot set exploration polygon to a PolygonStamped without frame_id.");
     return;
   }
-  
+
   std::stringstream ss;
   for (const auto& p : req->polygon.polygon.points)
   {
@@ -163,6 +174,7 @@ void ROSInterface::setExplorationPolygonCallback(
   }
   logger_.info("Setting exploration polygon to {}.", ss.str());
 
+  polygon_ecef_.reset();  // clear file-based polygon; only one active at a time
   exploration_polygon_ = req->polygon;
   exploration_polygon_pub_->publish(req->polygon);
 }
@@ -266,6 +278,7 @@ ExplorerParams ROSInterface::loadParams()
   p.publish_best_frontier = node_->declare_parameter("publish_best_frontier", p.publish_best_frontier);
   p.best_frontier_topic = node_->declare_parameter("best_frontier_topic", p.best_frontier_topic);
   p.dead_zone_min_distance = node_->declare_parameter("dead_zone_min_distance", p.dead_zone_min_distance);
+  p.polygon_file           = node_->declare_parameter("polygon_file",           p.polygon_file);
 
   p.wfd.free_threshold          = node_->declare_parameter("wfd.free_threshold",          p.wfd.free_threshold);
   p.wfd.occ_threshold           = node_->declare_parameter("wfd.occ_threshold",           p.wfd.occ_threshold);
@@ -320,6 +333,90 @@ std::vector<wfd::Pose2D> ROSInterface::getDeadZoneCenters(const std::string & ma
   }
 
   return dead_zone_centers;
+}
+
+// ============================================================
+//  parseMGRSFile
+// ============================================================
+std::optional<std::vector<std::array<double, 3>>>
+ROSInterface::parseMGRSFile(const std::string & path)
+{
+  std::ifstream file(path);
+  if (!file.is_open()) {
+    logger_.error("Cannot open polygon file '{}'", path);
+    return std::nullopt;
+  }
+
+  std::vector<std::array<double, 3>> ecef_points;
+  std::string line;
+  while (std::getline(file, line)) {
+    line.erase(0, line.find_first_not_of(" \t\r\n"));
+    if (line.empty() || line[0] == '#') continue;
+    line.erase(line.find_last_not_of(" \t\r\n") + 1);
+
+    try {
+      int zone;
+      bool northp;
+      double x, y;
+      int prec;
+      GeographicLib::MGRS::Reverse(line, zone, northp, x, y, prec);
+
+      double lat, lon;
+      GeographicLib::UTMUPS::Reverse(zone, northp, x, y, lat, lon);
+
+      double X, Y, Z;
+      GeographicLib::Geocentric::WGS84().Forward(lat, lon, 0.0, X, Y, Z);
+
+      ecef_points.push_back({X, Y, Z});
+      logger_.info("  MGRS '{}' → lat={:.6f} lon={:.6f} → ECEF ({:.0f}, {:.0f}, {:.0f})",
+        line, lat, lon, X, Y, Z);
+    } catch (const std::exception & e) {
+      logger_.error("Failed to parse MGRS line '{}': {}", line, e.what());
+      return std::nullopt;
+    }
+  }
+
+  if (ecef_points.size() < 3) {
+    logger_.error("Polygon file '{}' has fewer than 3 valid points (got {})", path, ecef_points.size());
+    return std::nullopt;
+  }
+
+  return ecef_points;
+}
+
+// ============================================================
+//  loadPolygonFromFileCallback
+// ============================================================
+void ROSInterface::loadPolygonFromFileCallback(
+  const std::shared_ptr<frontier_exploration::srv::LoadPolygonFromFile::Request> req,
+  std::shared_ptr<frontier_exploration::srv::LoadPolygonFromFile::Response> res)
+{
+  const std::string path = req->file_path.empty() ? params_.polygon_file : req->file_path;
+
+  if (path.empty()) {
+    logger_.error("No polygon file path: set polygon_file parameter or pass file_path in the request");
+    res->success = false;
+    res->message = "No file path provided";
+    return;
+  }
+
+  logger_.info("Loading MGRS polygon from '{}'", path);
+  auto ecef_pts = parseMGRSFile(path);
+
+  if (!ecef_pts) {
+    res->success = false;
+    res->message = "Failed to parse polygon file '" + path + "'";
+    return;
+  }
+
+  exploration_polygon_.reset();  // clear service-based polygon; only one active at a time
+  polygon_ecef_ = std::move(ecef_pts);
+
+  logger_.info("Loaded {} ECEF points from '{}' (frame 'earth'); will re-transform each loop iteration",
+    polygon_ecef_->size(), path);
+
+  res->success = true;
+  res->message = "Loaded " + std::to_string(polygon_ecef_->size()) + " points from " + path;
 }
 
 // ============================================================
@@ -700,13 +797,13 @@ void ROSInterface::explorationLoop()
           logger_.info("Polygon already in the correct frame '{}'",
               map_frame);
         } else {
-          try { 
+          try {
             auto tf = tf_buffer_->lookupTransform(exploration_polygon_.value().header.frame_id, map_frame,
               tf2::TimePointZero,
               tf2::durationFromSec(params_.tf_timeout_s));
 
             tf2::doTransform(exploration_polygon_.value(), polygon_transformed, tf);
-            
+
             for (auto &point : polygon_transformed.polygon.points) {
               wfd::Pose2D polygon_pose_tmp;
               polygon_pose_tmp.x = point.x;
@@ -724,6 +821,34 @@ void ROSInterface::explorationLoop()
 
       } catch (const tf2::TransformException & ex) {
         logger_.warn("TF lookup failed: {}", ex.what());
+      }
+    } else if (polygon_ecef_.has_value()) {
+      // Polygon stored in ECEF ('earth' frame) — re-transform each iteration so
+      // that improvements in the earth→map TF are picked up automatically.
+      try {
+        auto earth_to_map_tf = tf_buffer_->lookupTransform(
+          map_frame, "earth", tf2::TimePointZero,
+          tf2::durationFromSec(params_.tf_timeout_s));
+
+        for (const auto & ecef_pt : polygon_ecef_.value()) {
+          geometry_msgs::msg::PointStamped pt_in;
+          pt_in.header.frame_id = "earth";
+          pt_in.point.x = ecef_pt[0];
+          pt_in.point.y = ecef_pt[1];
+          pt_in.point.z = ecef_pt[2];
+
+          geometry_msgs::msg::PointStamped pt_out;
+          tf2::doTransform(pt_in, pt_out, earth_to_map_tf);
+
+          wfd::Pose2D pose;
+          pose.x = pt_out.point.x;
+          pose.y = pt_out.point.y;
+          polygon_poses_tmp.push_back(pose);
+        }
+        polygon_poses = polygon_poses_tmp;
+        logger_.info("ECEF polygon ({} pts) transformed to '{}'", polygon_poses_tmp.size(), map_frame);
+      } catch (const tf2::TransformException & ex) {
+        logger_.warn("Could not transform ECEF polygon from 'earth' to '{}': {}", map_frame, ex.what());
       }
     }
 

@@ -1,0 +1,4 @@
+string file_path  # if empty, the polygon_file parameter is used
+---
+bool success
+string message

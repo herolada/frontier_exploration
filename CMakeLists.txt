@@ -25,6 +25,7 @@ find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(GeographicLib REQUIRED)
 # find_package(fmt REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -32,6 +33,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetPolygon.srv"
   "srv/AddDeadZone.srv"
   "srv/ClearDeadZones.srv"
+  "srv/LoadPolygonFromFile.srv"
   DEPENDENCIES geometry_msgs
 )
 
@@ -80,7 +82,7 @@ ament_target_dependencies(wfd_ros_interface
 )
 
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
-target_link_libraries(wfd_ros_interface ${cpp_typesupport_target})
+target_link_libraries(wfd_ros_interface ${cpp_typesupport_target} GeographicLib::GeographicLib)
 
 # target_link_libraries(wfd_ros_interface wfd_core fmt::fmt)
 
