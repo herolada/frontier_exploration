@@ -575,22 +575,22 @@ std::optional<Frontier> WFDProcessor::selectBest(
     if (center_pose) {
       double norm_center_dist = center_pose->distanceTo(f.centroid) / max_center_dist;
       f.score -= w[3] * norm_center_dist;
-      logger_.warn(
-        "  Frontier [x {:.1f},y {:.1f}]: info={:.3f}, size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, center_dist={:.2f}, occ_deg={:.3f}, score={:.3f}",
-        f.centroid.x, f.centroid.y,
-        norm_info, f.size, dist,
-        std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
-        center_pose->distanceTo(f.centroid),
-        f.nearby_occupancy_degree,
-        f.score);
+      // logger_.warn(
+      //   "  Frontier [x {:.1f},y {:.1f}]: info={:.3f}, size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, center_dist={:.2f}, occ_deg={:.3f}, score={:.3f}",
+      //   f.centroid.x, f.centroid.y,
+      //   norm_info, f.size, dist,
+      //   std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
+      //   center_pose->distanceTo(f.centroid),
+      //   f.nearby_occupancy_degree,
+      //   f.score);
     } else {
-      logger_.warn(
-        "  Frontier [x {:.1f},y {:.1f}]: info={:.3f}, size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, occ_deg={:.3f}, score={:.3f}",
-        f.centroid.x, f.centroid.y,
-        norm_info, f.size, dist,
-        std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
-        f.nearby_occupancy_degree,
-        f.score);
+      // logger_.warn(
+      //   "  Frontier [x {:.1f},y {:.1f}]: info={:.3f}, size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, occ_deg={:.3f}, score={:.3f}",
+      //   f.centroid.x, f.centroid.y,
+      //   norm_info, f.size, dist,
+      //   std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
+      //   f.nearby_occupancy_degree,
+      //   f.score);
     }
 
     if (!best_idx || f.score > best_score) {

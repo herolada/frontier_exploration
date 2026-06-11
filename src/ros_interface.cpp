@@ -746,7 +746,11 @@ void ROSInterface::explorationLoop()
     auto robot_pos_opt = getRobotPosition(map_frame);
     if (!robot_pos_opt) {
       logger_.warn("Could not get robot position, skipping iteration");
-      std::this_thread::sleep_for(std::chrono::duration<double>(1.0));
+      auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_start).count();
+      double sleep_s = period_s - elapsed;
+      if (sleep_s > 0.0) {
+        std::this_thread::sleep_for(std::chrono::duration<double>(sleep_s));
+      }
       continue;
     }
     wfd::Pose2D robot_pos = *robot_pos_opt;
@@ -761,7 +765,11 @@ void ROSInterface::explorationLoop()
 
     if (frontiers.empty()) {
       logger_.info("No frontiers detected – exploration may be complete!");
-      std::this_thread::sleep_for(std::chrono::duration<double>(2.0));
+      auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_start).count();
+      double sleep_s = period_s - elapsed;
+      if (sleep_s > 0.0) {
+        std::this_thread::sleep_for(std::chrono::duration<double>(sleep_s));
+      }
       continue;
     }
 
@@ -808,6 +816,11 @@ void ROSInterface::explorationLoop()
 
     if (!best) {
       logger_.warn("Could not select best frontier");
+      auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_start).count();
+      double sleep_s = period_s - elapsed;
+      if (sleep_s > 0.0) {
+        std::this_thread::sleep_for(std::chrono::duration<double>(sleep_s));
+      }
       continue;
     }
 
@@ -837,8 +850,7 @@ void ROSInterface::explorationLoop()
     // ------------------------------------------------------------------
     // 8. Rate limiting (respects time already spent)
     // ------------------------------------------------------------------
-    auto elapsed = std::chrono::duration<double>(
-      std::chrono::steady_clock::now() - loop_start).count();
+    auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_start).count();
     double sleep_s = period_s - elapsed;
     if (sleep_s > 0.0) {
       std::this_thread::sleep_for(std::chrono::duration<double>(sleep_s));
