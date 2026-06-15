@@ -538,64 +538,106 @@ std::optional<Frontier> WFDProcessor::selectBest(
 
   const std::vector<double> w = params_.weights;
 
+  // Precompute the (normalised) information gain once per frontier — the raycast
+  // in approximateInfoGain is expensive and independent of the filter thresholds,
+  // so it must not be repeated across relaxation passes below.
+  std::vector<double> norm_info_gains(frontiers.size());
+  for (size_t idx = 0; idx < frontiers.size(); ++idx) {
+    double info_gain = approximateInfoGain(&logger_, frontiers[idx].centroid, grid, params_.sensor_range, 32);
+    norm_info_gains[idx] = info_gain / max_info;
+  }
+
+  // Relaxation thresholds: start from the configured values and, if no frontier
+  // qualifies, iteratively decrease the info-gain floor and then increase the
+  // occupancy-degree ceiling until at least one frontier passes (or the filters
+  // become fully permissive). The distance filter stays a hard constraint.
+  double min_norm_info_gain = params_.min_norm_info_gain;
+  double max_norm_occ_deg   = params_.max_norm_occ_deg;
+  constexpr double kInfoRelaxFactor = 0.5;  // halve the info-gain floor each pass
+  constexpr double kOccRelaxStep    = 0.1;  // raise the occ-degree ceiling each pass
+  constexpr int    kMaxRelaxIters   = 64;   // safety bound against infinite loops
+
   std::optional<size_t> best_idx;
   double best_score = std::numeric_limits<double>::lowest();
 
-  for (size_t idx = 0; idx < frontiers.size(); ++idx) {
-    auto & f = frontiers[idx];
-    double dist = robot_pos.distanceTo(f.centroid);
-    if (dist < params_.min_frontier_dist) {
-      logger_.debug(
-        "  Frontier [x {:.1f},y {:.1f}] skipped: dist={:.2f} m < min_frontier_dist={:.2f}",
-        f.centroid.x, f.centroid.y, dist, params_.min_frontier_dist);
-      continue;
+  for (int relax = 0; relax < kMaxRelaxIters; ++relax) {
+    best_idx.reset();
+    best_score = std::numeric_limits<double>::lowest();
+
+    for (size_t idx = 0; idx < frontiers.size(); ++idx) {
+      auto & f = frontiers[idx];
+      double dist = robot_pos.distanceTo(f.centroid);
+      if (dist < params_.min_frontier_dist) {
+        logger_.debug(
+          "  Frontier [x {:.1f},y {:.1f}] skipped: dist={:.2f} m < min_frontier_dist={:.2f}",
+          f.centroid.x, f.centroid.y, dist, params_.min_frontier_dist);
+        continue;
+      }
+
+      double norm_info = norm_info_gains[idx];
+      if (norm_info < min_norm_info_gain) {
+        logger_.debug(
+          "  Frontier [x {:.1f},y {:.1f}] skipped: norm_info={:.3f} < min_norm_info_gain={:.3f}",
+          f.centroid.x, f.centroid.y, norm_info, min_norm_info_gain);
+        continue;
+      }
+
+      double norm_dist = dist / max_dist;
+      double norm_yaw_diff = std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw) / max_yaw_diff;
+      double norm_occ_deg = f.nearby_occupancy_degree / max_occ_deg;
+      if (norm_occ_deg > max_norm_occ_deg) {
+        logger_.debug(
+          "  Frontier [x {:.1f},y {:.1f}] skipped: norm_occ_deg={:.3f} > max_norm_occ_deg={:.3f}",
+          f.centroid.x, f.centroid.y, norm_occ_deg, max_norm_occ_deg);
+        continue;
+      }
+
+      f.score = w[0] * norm_info - w[1] * norm_dist - w[2] * norm_yaw_diff - w[4] * norm_occ_deg;
+
+      if (center_pose) {
+        double norm_center_dist = center_pose->distanceTo(f.centroid) / max_center_dist;
+        f.score -= w[3] * norm_center_dist;
+        // logger_.warn(
+        //   "  Frontier [x {:.1f},y {:.1f}]: info={:.3f}, size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, center_dist={:.2f}, occ_deg={:.3f}, score={:.3f}",
+        //   f.centroid.x, f.centroid.y,
+        //   norm_info, f.size, dist,
+        //   std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
+        //   center_pose->distanceTo(f.centroid),
+        //   f.nearby_occupancy_degree,
+        //   f.score);
+      } else {
+        // logger_.warn(
+        //   "  Frontier [x {:.1f},y {:.1f}]: info={:.3f}, size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, occ_deg={:.3f}, score={:.3f}",
+        //   f.centroid.x, f.centroid.y,
+        //   norm_info, f.size, dist,
+        //   std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
+        //   f.nearby_occupancy_degree,
+        //   f.score);
+      }
+
+      if (!best_idx || f.score > best_score) {
+        best_idx = idx;
+        best_score = f.score;
+      }
     }
 
-    double info_gain = approximateInfoGain(&logger_, f.centroid, grid, params_.sensor_range, 32);
-    double norm_info = info_gain / max_info;
-    if (norm_info < params_.min_norm_info_gain) {
-      logger_.debug(
-        "  Frontier [x {:.1f},y {:.1f}] skipped: norm_info={:.3f} < min_norm_info_gain={:.3f}",
-        f.centroid.x, f.centroid.y, norm_info, params_.min_norm_info_gain);
-      continue;
+    if (best_idx) {
+      if (relax > 0) {
+        logger_.warn(
+          "WFD: selected a frontier only after relaxing filters {}x "
+          "(min_norm_info_gain={:.4f}, max_norm_occ_deg={:.4f})",
+          relax, min_norm_info_gain, max_norm_occ_deg);
+      }
+      break;
     }
 
-    double norm_dist = dist / max_dist;
-    double norm_yaw_diff = std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw) / max_yaw_diff;
-    double norm_occ_deg = f.nearby_occupancy_degree / max_occ_deg;
-    if (norm_occ_deg > params_.max_norm_occ_deg) {
-      logger_.debug(
-        "  Frontier [x {:.1f},y {:.1f}] skipped: norm_occ_deg={:.3f} > max_norm_occ_deg={:.3f}",
-        f.centroid.x, f.centroid.y, norm_occ_deg, params_.max_norm_occ_deg);
-      continue;
-    }
-    
-    f.score = w[0] * norm_info - w[1] * norm_dist - w[2] * norm_yaw_diff - w[4] * norm_occ_deg;
-
-    if (center_pose) {
-      double norm_center_dist = center_pose->distanceTo(f.centroid) / max_center_dist;
-      f.score -= w[3] * norm_center_dist;
-      // logger_.warn(
-      //   "  Frontier [x {:.1f},y {:.1f}]: info={:.3f}, size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, center_dist={:.2f}, occ_deg={:.3f}, score={:.3f}",
-      //   f.centroid.x, f.centroid.y,
-      //   norm_info, f.size, dist,
-      //   std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
-      //   center_pose->distanceTo(f.centroid),
-      //   f.nearby_occupancy_degree,
-      //   f.score);
+    // No frontier qualified: relax the filters. First drive the info-gain floor
+    // toward zero, then (once it is effectively zero) raise the occ-degree ceiling.
+    if (min_norm_info_gain > 1e-6) {
+      min_norm_info_gain *= kInfoRelaxFactor;
+      if (min_norm_info_gain < 1e-6) min_norm_info_gain = 0.0;
     } else {
-      // logger_.warn(
-      //   "  Frontier [x {:.1f},y {:.1f}]: info={:.3f}, size={:.0f}, dist={:.2f} m, yaw diff={:.2f}, occ_deg={:.3f}, score={:.3f}",
-      //   f.centroid.x, f.centroid.y,
-      //   norm_info, f.size, dist,
-      //   std::fabs(std::atan2(f.centroid.y - robot_pos.y, f.centroid.x - robot_pos.x) - robot_pos.yaw),
-      //   f.nearby_occupancy_degree,
-      //   f.score);
-    }
-
-    if (!best_idx || f.score > best_score) {
-      best_idx = idx;
-      best_score = f.score;
+      max_norm_occ_deg += kOccRelaxStep;
     }
   }
 

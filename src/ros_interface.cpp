@@ -908,28 +908,43 @@ void ROSInterface::explorationLoop()
     // 4.6 Filter frontiers inside dead zones.
     // ------------------------------------------------------------------
     const auto dead_zone_centers = getDeadZoneCenters(map_frame);
-    if (!dead_zone_centers.empty()) {
+    if (!dead_zone_centers.empty() && !frontiers.empty()) {
       const double dead_zone_min_distance_sq = params_.dead_zone_min_distance * params_.dead_zone_min_distance;
       const auto before_count = frontiers.size();
 
-      frontiers.erase(
-        std::remove_if(frontiers.begin(), frontiers.end(),
-          [&dead_zone_centers, dead_zone_min_distance_sq](const wfd::Frontier & frontier) {
-            return std::any_of(
-              dead_zone_centers.begin(), dead_zone_centers.end(),
-              [&frontier, dead_zone_min_distance_sq](const wfd::Pose2D & dead_zone) {
-                const double dx = frontier.centroid.x - dead_zone.x;
-                const double dy = frontier.centroid.y - dead_zone.y;
-                return (dx * dx + dy * dy) < dead_zone_min_distance_sq;
-              });
-          }),
-        frontiers.end());
+      const auto is_in_dead_zone =
+        [&dead_zone_centers, dead_zone_min_distance_sq](const wfd::Frontier & frontier) {
+          return std::any_of(
+            dead_zone_centers.begin(), dead_zone_centers.end(),
+            [&frontier, dead_zone_min_distance_sq](const wfd::Pose2D & dead_zone) {
+              const double dx = frontier.centroid.x - dead_zone.x;
+              const double dy = frontier.centroid.y - dead_zone.y;
+              return (dx * dx + dy * dy) < dead_zone_min_distance_sq;
+            });
+        };
 
-      const auto removed_count = before_count - frontiers.size();
-      if (removed_count > 0) {
-        logger_.info(
-          "Dead-zone filter removed {} frontier(s) using {} stored dead zone(s)",
-          removed_count, dead_zone_centers.size());
+      // If every frontier falls inside a dead zone, applying the filter would
+      // leave nothing to explore. In that case keep all frontiers this one time
+      // (the dead zones remain stored for later cycles) rather than stalling.
+      const bool all_in_dead_zones =
+        std::all_of(frontiers.begin(), frontiers.end(), is_in_dead_zone);
+
+      if (all_in_dead_zones) {
+        logger_.warn(
+          "Dead-zone filter would remove all {} frontier(s) using {} stored dead zone(s); "
+          "keeping them this cycle (dead zones remain stored)",
+          before_count, dead_zone_centers.size());
+      } else {
+        frontiers.erase(
+          std::remove_if(frontiers.begin(), frontiers.end(), is_in_dead_zone),
+          frontiers.end());
+
+        const auto removed_count = before_count - frontiers.size();
+        if (removed_count > 0) {
+          logger_.info(
+            "Dead-zone filter removed {} frontier(s) using {} stored dead zone(s)",
+            removed_count, dead_zone_centers.size());
+        }
       }
     }
 
