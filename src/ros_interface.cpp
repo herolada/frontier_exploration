@@ -417,6 +417,20 @@ void ROSInterface::loadPolygonFromFileCallback(
 
   res->success = true;
   res->message = "Loaded " + std::to_string(polygon_ecef_->size()) + " points from " + path;
+
+  geometry_msgs::msg::PolygonStamped polygon_msg;
+  polygon_msg.header.frame_id = "earth";
+  polygon_msg.header.stamp = node_->now();
+
+  for (auto &point : polygon_ecef_.value()) {
+    geometry_msgs::msg::Point32 p;
+    p.x = point[0]; 
+    p.y = point[1]; 
+    p.z = point[2]; 
+    polygon_msg.polygon.points.push_back(p);
+  }
+
+  exploration_polygon_pub_->publish(polygon_msg);
 }
 
 // ============================================================
@@ -844,6 +858,7 @@ void ROSInterface::explorationLoop()
           pose.x = pt_out.point.x;
           pose.y = pt_out.point.y;
           polygon_poses_tmp.push_back(pose);
+          logger_.warn("POLYGON IN MAP x {}, y {}", pose.x,pose.y);
         }
         polygon_poses = polygon_poses_tmp;
         logger_.info("ECEF polygon ({} pts) transformed to '{}'", polygon_poses_tmp.size(), map_frame);

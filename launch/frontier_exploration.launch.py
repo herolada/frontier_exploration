@@ -22,7 +22,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     pkg_share = FindPackageShare("frontier_exploration")
-    default_config = PathJoinSubstitution([pkg_share, "params", "frontier_exploration_helhest.yaml"])
+    default_config = PathJoinSubstitution([pkg_share, "params", "frontier_exploration_husky.yaml"])
     elrob_polygon = PathJoinSubstitution([pkg_share, "params", "UTM_Mule_Recon_2026.txt"])
 
     # ── Declare the launch arguments we expose directly ──────────────────
