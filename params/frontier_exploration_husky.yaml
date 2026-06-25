@@ -2,6 +2,7 @@
   ros__parameters:
     # ── Topics / frames ──────────────────────────────────────────────────
     map_topic: "/naex/map_occupancy_grid"
+    scan_map_topic: "/terrain/map_occupancy_grid"
     robot_frame: "os_sensor"
     nav2_action: "navigate_to_pose"
 

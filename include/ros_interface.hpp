@@ -18,6 +18,7 @@
 #include "frontier_exploration/srv/add_dead_zone.hpp"
 #include "frontier_exploration/srv/clear_dead_zones.hpp"
 #include "frontier_exploration/srv/load_polygon_from_file.hpp"
+#include "frontier_exploration/srv/explore_once.hpp"
 
 #include <array>
 #include <atomic>
@@ -35,6 +36,7 @@ struct ExplorerParams
 {
   // Topics / frames
   std::string map_topic{"/map"};
+  std::string scan_map_topic{"/scan_occupancy_grid"};  // single-scan grid for explore_once
   std::string robot_frame{"base_link"};
   std::string nav2_action{"navigate_to_pose"};
 
@@ -93,6 +95,18 @@ private:
 
   void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
 
+  void scanMapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
+
+  /**
+   * One-shot exploration: run a single pass on the requested map (local or
+   * single-scan) using the request pose as a temporary exploration center, and
+   * return the best frontier. Runs in its own callback group, parallel to the
+   * exploration loop.
+   */
+  void exploreOnceCallback(
+    const std::shared_ptr<srv::ExploreOnce::Request> req,
+    std::shared_ptr<srv::ExploreOnce::Response> res);
+
   void setExplorationCenterCallback(
     const std::shared_ptr<srv::SetPose::Request> req,
     std::shared_ptr<srv::SetPose::Response> res);
@@ -119,6 +133,19 @@ private:
 
   void explorationLoop();
 
+  /**
+   * Shared exploration core used by both the loop and the explore_once service.
+   * Builds the grid from @p map_msg, filters frontiers (polygon + dead zones)
+   * and returns the best frontier scored against @p center_pose (may be unset).
+   * Optionally publishes the frontier markers. Returns nullopt if no robot
+   * position / frontiers / best frontier is available. Serialised internally so
+   * the (non-thread-safe) WFD processor is never used by two threads at once.
+   */
+  std::optional<wfd::Frontier> computeBestFrontier(
+    const nav_msgs::msg::OccupancyGrid::SharedPtr & map_msg,
+    const std::optional<wfd::Pose2D> & center_pose,
+    bool publish_markers);
+
   // -----------------------------------------------------------------------
   // Nav2 helpers
   // -----------------------------------------------------------------------
@@ -136,8 +163,9 @@ private:
   /** Get robot position in the map frame. Returns nullopt on failure. */
   std::optional<wfd::Pose2D> getRobotPosition(const std::string & map_frame);
 
-  /** Transform the stored exploration center into @p map_frame (nullopt if unset/TF fails). */
-  std::optional<wfd::Pose2D> transformCenterToMap(const std::string & map_frame);
+  /** Transform a PoseStamped into @p map_frame as a 2D pose (nullopt if TF fails). */
+  std::optional<wfd::Pose2D> transformPoseToMap(
+    const geometry_msgs::msg::PoseStamped & pose_in, const std::string & map_frame);
 
   /**
    * Transform the active exploration polygon (either the PolygonStamped set via
@@ -188,10 +216,22 @@ private:
   ROSLogger logger_;
   ExplorerParams params_;
 
-  // Map subscription
+  // Map subscription (local / accumulated map)
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
   nav_msgs::msg::OccupancyGrid::SharedPtr latest_map_;
   std::mutex map_mutex_;
+
+  // Single-scan map subscription (used by the explore_once service)
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr scan_map_sub_;
+  nav_msgs::msg::OccupancyGrid::SharedPtr latest_scan_map_;
+  std::mutex scan_map_mutex_;
+
+  // Serialises the shared (non-thread-safe) WFD compute between loop & service.
+  std::mutex compute_mutex_;
+
+  // explore_once service (runs in its own callback group, parallel to the loop)
+  rclcpp::Service<frontier_exploration::srv::ExploreOnce>::SharedPtr explore_once_server_;
+  rclcpp::CallbackGroup::SharedPtr explore_once_cb_group_;
 
   // TF
   std::shared_ptr<tf2_ros::Buffer>            tf_buffer_;

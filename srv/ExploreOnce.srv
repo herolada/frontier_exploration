@@ -1,0 +1,6 @@
+# Run a single frontier-exploration pass and return the best frontier.
+geometry_msgs/PoseStamped center   # temporary exploration center (must have frame_id)
+bool use_scan_map                  # true: single-scan map; false: local (accumulated) map
+---
+bool success
+geometry_msgs/PoseStamped best_frontier

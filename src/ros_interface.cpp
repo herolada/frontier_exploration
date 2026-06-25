@@ -68,6 +68,12 @@ ROSInterface::ROSInterface(rclcpp::Node::SharedPtr node)
     params_.map_topic, map_qos,
     [this](const nav_msgs::msg::OccupancyGrid::SharedPtr msg){ mapCallback(msg); });
 
+  // Single-scan map subscription. Volatile keep-last-1 so it is compatible with
+  // both volatile and transient-local publishers; used only by explore_once.
+  scan_map_sub_ = node_->create_subscription<nav_msgs::msg::OccupancyGrid>(
+    params_.scan_map_topic, rclcpp::QoS(1),
+    [this](const nav_msgs::msg::OccupancyGrid::SharedPtr msg){ scanMapCallback(msg); });
+
   // Marker publisher
   if (params_.publish_markers) {
     marker_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
@@ -102,6 +108,17 @@ ROSInterface::ROSInterface(rclcpp::Node::SharedPtr node)
   // Load exploration polygon from MGRS file
   load_polygon_from_file_server_ = createService<srv::LoadPolygonFromFile>(
     "~/load_polygon_from_file", &ROSInterface::loadPolygonFromFileCallback);
+
+  // One-shot exploration service. Lives in its own (mutually-exclusive) callback
+  // group so its potentially slow compute runs in parallel with the loop and the
+  // other callbacks under a MultiThreadedExecutor.
+  explore_once_cb_group_ = node_->create_callback_group(
+    rclcpp::CallbackGroupType::MutuallyExclusive);
+  explore_once_server_ = node_->create_service<frontier_exploration::srv::ExploreOnce>(
+    "~/explore_once",
+    std::bind(&ROSInterface::exploreOnceCallback, this,
+                std::placeholders::_1, std::placeholders::_2),
+    rclcpp::ServicesQoS(), explore_once_cb_group_);
 
   // WFD processor
   wfd_processor_ = std::make_unique<wfd::WFDProcessor>(params_.wfd, logger_);
@@ -143,6 +160,12 @@ void ROSInterface::mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg
 {
   std::lock_guard<std::mutex> lock(map_mutex_);
   latest_map_ = msg;
+}
+
+void ROSInterface::scanMapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(scan_map_mutex_);
+  latest_scan_map_ = msg;
 }
 
 void ROSInterface::setExplorationCenterCallback(
@@ -270,6 +293,7 @@ ExplorerParams ROSInterface::loadParams()
 #define DECLARE_PARAM(member) p.member = node_->declare_parameter(#member, p.member)
 
   DECLARE_PARAM(map_topic);
+  DECLARE_PARAM(scan_map_topic);
   DECLARE_PARAM(robot_frame);
   DECLARE_PARAM(nav2_action);
   DECLARE_PARAM(loop_rate_hz);
@@ -590,23 +614,21 @@ void ROSInterface::publishFrontierMarkers(
 }
 
 // ============================================================
-//  transformCenterToMap
+//  transformPoseToMap
 // ============================================================
 std::optional<wfd::Pose2D>
-ROSInterface::transformCenterToMap(const std::string & map_frame)
+ROSInterface::transformPoseToMap(
+  const geometry_msgs::msg::PoseStamped & pose_in, const std::string & map_frame)
 {
-  if (!exploration_center_.has_value()) return std::nullopt;
-  const auto & center = exploration_center_.value();
-
-  geometry_msgs::msg::PoseStamped center_map;
-  if (center.header.frame_id == map_frame) {
-    center_map = center;
+  geometry_msgs::msg::PoseStamped pose_map;
+  if (pose_in.header.frame_id == map_frame) {
+    pose_map = pose_in;
   } else {
     try {
       auto tf = tf_buffer_->lookupTransform(
-        map_frame, center.header.frame_id, tf2::TimePointZero,
+        map_frame, pose_in.header.frame_id, tf2::TimePointZero,
         tf2::durationFromSec(params_.tf_timeout_s));
-      tf2::doTransform(center, center_map, tf);
+      tf2::doTransform(pose_in, pose_map, tf);
     } catch (const tf2::TransformException & ex) {
       logger_.warn("TF lookup failed: {}", ex.what());
       return std::nullopt;
@@ -614,11 +636,9 @@ ROSInterface::transformCenterToMap(const std::string & map_frame)
   }
 
   wfd::Pose2D pose;
-  pose.x = center_map.pose.position.x;
-  pose.y = center_map.pose.position.y;
+  pose.x = pose_map.pose.position.x;
+  pose.y = pose_map.pose.position.y;
   pose.yaw = 0.0;
-  logger_.info("Exploration center: (x {:.2f}, y {:.2f}, yaw {:.2f}) in '{}'",
-    pose.x, pose.y, pose.yaw, map_frame);
   return pose;
 }
 
@@ -694,6 +714,73 @@ ROSInterface::transformPolygonToMap(const std::string & map_frame)
 }
 
 // ============================================================
+//  computeBestFrontier  (shared by the loop and explore_once)
+// ============================================================
+std::optional<wfd::Frontier> ROSInterface::computeBestFrontier(
+  const nav_msgs::msg::OccupancyGrid::SharedPtr & map_msg,
+  const std::optional<wfd::Pose2D> & center_pose,
+  bool publish_markers)
+{
+  if (!map_msg) return std::nullopt;
+  const std::string map_frame = map_msg->header.frame_id;
+
+  // The WFD processor is stateful / not thread-safe, so only one thread may run
+  // this core at a time (loop vs. explore_once service).
+  std::lock_guard<std::mutex> compute_lock(compute_mutex_);
+
+  // Transform the active exploration polygon (if any) into the map frame.
+  std::optional<std::vector<wfd::Pose2D>> polygon_poses = transformPolygonToMap(map_frame);
+
+  // Build thresholded grid.
+  const auto & info = map_msg->info;
+  wfd::OccupancyGrid grid = wfd_processor_->buildGrid(
+    map_msg->data,
+    static_cast<int>(info.width),
+    static_cast<int>(info.height),
+    info.resolution,
+    info.origin.position.x,
+    info.origin.position.y,
+    map_frame);
+
+  // Robot position.
+  auto robot_pos_opt = getRobotPosition(map_frame);
+  if (!robot_pos_opt) {
+    logger_.warn("Could not get robot position, skipping");
+    return std::nullopt;
+  }
+  const wfd::Pose2D robot_pos = *robot_pos_opt;
+  logger_.info("Robot position: (x {:.2f}, y {:.2f}, yaw {:.2f}) in '{}'",
+    robot_pos.x, robot_pos.y, robot_pos.yaw, map_frame);
+
+  // Detect frontiers.
+  auto frontiers = wfd_processor_->detect(grid, robot_pos);
+  if (frontiers.empty()) {
+    logger_.info("No frontiers detected – exploration may be complete!");
+    return std::nullopt;
+  }
+
+  // Filter frontiers outside the polygon and inside dead zones.
+  if (polygon_poses.has_value()) {
+    wfd::remove_frontiers_outside_polygon(polygon_poses.value(), frontiers);
+  }
+  wfd::filter_frontiers_in_dead_zones(
+    frontiers, getDeadZoneCenters(map_frame), params_.dead_zone_min_distance, logger_);
+
+  // Select best frontier (scored against the optional exploration center).
+  auto best = wfd_processor_->selectBest(frontiers, grid, robot_pos, center_pose);
+  if (!best) {
+    logger_.warn("Could not select best frontier");
+    return std::nullopt;
+  }
+
+  if (publish_markers) {
+    publishFrontierMarkers(frontiers, best, map_frame);
+  }
+
+  return best;
+}
+
+// ============================================================
 //  explorationLoop  (runs in its own thread)
 // ============================================================
 void ROSInterface::explorationLoop()
@@ -727,74 +814,20 @@ void ROSInterface::explorationLoop()
     // Sleep out the remainder of the loop period on every exit path below.
     ScopedRateLimiter rate_limiter{loop_start, period_s};
 
-    // Transform the exploration center / polygon into the map frame.
-    const std::optional<wfd::Pose2D> center_pose = transformCenterToMap(map_frame);
-    std::optional<std::vector<wfd::Pose2D>> polygon_poses = transformPolygonToMap(map_frame);
-
-    // ------------------------------------------------------------------
-    // 2. Build thresholded grid
-    // ------------------------------------------------------------------
-    const auto & info = map_msg->info;
-    wfd::OccupancyGrid grid = wfd_processor_->buildGrid(
-      map_msg->data,
-      static_cast<int>(info.width),
-      static_cast<int>(info.height),
-      info.resolution,
-      info.origin.position.x,
-      info.origin.position.y,
-      map_frame);
-
-    // ------------------------------------------------------------------
-    // 3. Get robot position
-    // ------------------------------------------------------------------
-    auto robot_pos_opt = getRobotPosition(map_frame);
-    if (!robot_pos_opt) {
-      logger_.warn("Could not get robot position, skipping iteration");
-      continue;
-    }
-    wfd::Pose2D robot_pos = *robot_pos_opt;
-
-    logger_.info("Robot position: (x {:.2f}, y {:.2f}, yaw {:.2f}) in '{}'",
-      robot_pos.x, robot_pos.y, robot_pos.yaw, map_frame);
-
-    // ------------------------------------------------------------------
-    // 4. Run WFD
-    // ------------------------------------------------------------------
-    auto frontiers = wfd_processor_->detect(grid, robot_pos);
-
-    if (frontiers.empty()) {
-      logger_.info("No frontiers detected – exploration may be complete!");
-      continue;
+    // Transform the (persistent) exploration center into the map frame, if set.
+    std::optional<wfd::Pose2D> center_pose;
+    if (exploration_center_.has_value()) {
+      center_pose = transformPoseToMap(exploration_center_.value(), map_frame);
     }
 
     // ------------------------------------------------------------------
-    // 4.5 (optional) Filter frontiers outside of polygon.
+    // 2-6. Shared core: grid build, WFD, filtering, best-frontier selection,
+    //      marker publishing.
     // ------------------------------------------------------------------
-    if (polygon_poses.has_value())
-      wfd::remove_frontiers_outside_polygon(polygon_poses.value(), frontiers);
-
-    // ------------------------------------------------------------------
-    // 4.6 Filter frontiers inside dead zones. (centres require TF, so they are
-    //     resolved here; the geometric filtering itself is non-ROS.)
-    // ------------------------------------------------------------------
-    wfd::filter_frontiers_in_dead_zones(
-      frontiers, getDeadZoneCenters(map_frame), params_.dead_zone_min_distance, logger_);
-
-    // ------------------------------------------------------------------
-    // 5. Select best frontier
-    // ------------------------------------------------------------------
-    std::optional<wfd::Frontier> best;
-    best = wfd_processor_->selectBest(frontiers, grid, robot_pos, center_pose);
-
+    const auto best = computeBestFrontier(map_msg, center_pose, params_.publish_markers);
     if (!best) {
-      logger_.warn("Could not select best frontier");
-      continue;
+      continue;  // reason already logged inside computeBestFrontier
     }
-
-    // ------------------------------------------------------------------
-    // 6. Publish visualisation
-    // ------------------------------------------------------------------
-    publishFrontierMarkers(frontiers, best, map_frame);
 
     // ------------------------------------------------------------------
     // 7. Navigate to goal
@@ -818,6 +851,62 @@ void ROSInterface::explorationLoop()
   }
 
   logger_.info("Exploration loop finished");
+}
+
+// ============================================================
+//  exploreOnceCallback  (one-shot, runs in its own callback group)
+// ============================================================
+void ROSInterface::exploreOnceCallback(
+  const std::shared_ptr<srv::ExploreOnce::Request> req,
+  std::shared_ptr<srv::ExploreOnce::Response> res)
+{
+  res->success = false;
+
+  if (req->center.header.frame_id.empty()) {
+    logger_.error("explore_once: center pose has no frame_id");
+    return;
+  }
+
+  // Select the requested map source.
+  nav_msgs::msg::OccupancyGrid::SharedPtr map_msg;
+  if (req->use_scan_map) {
+    std::lock_guard<std::mutex> lock(scan_map_mutex_);
+    map_msg = latest_scan_map_;
+  } else {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    map_msg = latest_map_;
+  }
+
+  const char * source = req->use_scan_map ? "single-scan" : "local";
+  if (!map_msg) {
+    logger_.error("explore_once: no {} map received yet", source);
+    return;
+  }
+
+  const std::string map_frame = map_msg->header.frame_id;
+
+  // Temporary exploration center (not stored, unlike the loop's center).
+  const auto center_pose = transformPoseToMap(req->center, map_frame);
+  if (!center_pose) {
+    logger_.error("explore_once: could not transform center into '{}'", map_frame);
+    return;
+  }
+
+  logger_.info("explore_once on {} map, center ({:.2f}, {:.2f}) in '{}'",
+    source, center_pose->x, center_pose->y, map_frame);
+
+  const auto best = computeBestFrontier(map_msg, center_pose, params_.publish_markers);
+  if (!best) {
+    return;  // reason already logged inside computeBestFrontier
+  }
+
+  res->success = true;
+  res->best_frontier.header.stamp = node_->now();
+  res->best_frontier.header.frame_id = map_frame;
+  res->best_frontier.pose.position.x = best->centroid.x;
+  res->best_frontier.pose.position.y = best->centroid.y;
+  res->best_frontier.pose.position.z = 0.0;
+  res->best_frontier.pose.orientation.w = 1.0;
 }
 
 }  // namespace frontier_exploration

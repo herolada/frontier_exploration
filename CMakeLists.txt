@@ -34,6 +34,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/AddDeadZone.srv"
   "srv/ClearDeadZones.srv"
   "srv/LoadPolygonFromFile.srv"
+  "srv/ExploreOnce.srv"
   DEPENDENCIES geometry_msgs
 )
 
