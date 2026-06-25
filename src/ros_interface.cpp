@@ -4,13 +4,9 @@
 #include "frontier_exploration/srv/clear_dead_zones.hpp"
 #include "frontier_exploration/srv/load_polygon_from_file.hpp"
 #include "polygon_helpers.hpp"
-
-#include <GeographicLib/MGRS.hpp>
-#include <GeographicLib/UTMUPS.hpp>
-#include <GeographicLib/Geocentric.hpp>
+#include "mgrs_polygon.hpp"
 
 #include <algorithm>
-#include <fstream>
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -23,6 +19,28 @@
 #include <stdexcept>
 
 using namespace std::chrono_literals;
+
+namespace
+{
+// Sleeps for whatever remains of `period_s` (measured from construction) when it
+// goes out of scope, so every exit path of the exploration loop is rate-limited
+// without repeating the timing arithmetic.
+struct ScopedRateLimiter
+{
+  std::chrono::steady_clock::time_point start;
+  double period_s;
+
+  ~ScopedRateLimiter()
+  {
+    const double elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    const double remaining = period_s - elapsed;
+    if (remaining > 0.0) {
+      std::this_thread::sleep_for(std::chrono::duration<double>(remaining));
+    }
+  }
+};
+}  // namespace
 
 namespace frontier_exploration
 {
@@ -61,47 +79,29 @@ ROSInterface::ROSInterface(rclcpp::Node::SharedPtr node)
       params_.best_frontier_topic, 10);
   }
 
-  // Exploration center publisher
+  // Exploration center: publisher + service
   exploration_center_pub_ = node_->create_publisher<geometry_msgs::msg::PoseStamped>(
     "~/exploration_center", rclcpp::QoS(1).transient_local());
+  set_exploration_center_server_ = createService<srv::SetPose>(
+    "~/set_exploration_center", &ROSInterface::setExplorationCenterCallback);
 
-  // Service server for setting point around which to explore
-  set_exploration_center_server_ = node_->create_service<frontier_exploration::srv::SetPose>(
-    "~/set_exploration_center",
-    std::bind(&ROSInterface::setExplorationCenterCallback, this,
-                std::placeholders::_1, std::placeholders::_2));
-
-  // Exploration polygon publisher
+  // Exploration polygon: publisher + service
   exploration_polygon_pub_ = node_->create_publisher<geometry_msgs::msg::PolygonStamped>(
     "~/exploration_polygon", rclcpp::QoS(1).transient_local());
+  set_exploration_polygon_server_ = createService<srv::SetPolygon>(
+    "~/set_exploration_polygon", &ROSInterface::setExplorationPolygonCallback);
 
-  // Service server for setting polygon in which to explore
-  set_exploration_polygon_server_ = node_->create_service<frontier_exploration::srv::SetPolygon>(
-    "~/set_exploration_polygon",
-    std::bind(&ROSInterface::setExplorationPolygonCallback, this,
-                std::placeholders::_1, std::placeholders::_2));
-
-  // Dead zones publisher
+  // Dead zones: publisher + add/clear services
   dead_zones_pub_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>(
     "~/dead_zones", rclcpp::QoS(1).transient_local());
+  add_dead_zone_server_ = createService<srv::AddDeadZone>(
+    "~/add_dead_zone", &ROSInterface::addDeadZoneCallback);
+  clear_dead_zones_server_ = createService<srv::ClearDeadZones>(
+    "~/clear_dead_zones", &ROSInterface::clearDeadZonesCallback);
 
-  // Service server for adding dead zones
-  add_dead_zone_server_ = node_->create_service<frontier_exploration::srv::AddDeadZone>(
-    "~/add_dead_zone",
-    std::bind(&ROSInterface::addDeadZoneCallback, this,
-                std::placeholders::_1, std::placeholders::_2));
-
-  // Service server for clearing dead zones
-  clear_dead_zones_server_ = node_->create_service<frontier_exploration::srv::ClearDeadZones>(
-    "~/clear_dead_zones",
-    std::bind(&ROSInterface::clearDeadZonesCallback, this,
-                std::placeholders::_1, std::placeholders::_2));
-
-  // Service server for loading exploration polygon from MGRS file
-  load_polygon_from_file_server_ = node_->create_service<frontier_exploration::srv::LoadPolygonFromFile>(
-    "~/load_polygon_from_file",
-    std::bind(&ROSInterface::loadPolygonFromFileCallback, this,
-                std::placeholders::_1, std::placeholders::_2));
+  // Load exploration polygon from MGRS file
+  load_polygon_from_file_server_ = createService<srv::LoadPolygonFromFile>(
+    "~/load_polygon_from_file", &ROSInterface::loadPolygonFromFileCallback);
 
   // WFD processor
   wfd_processor_ = std::make_unique<wfd::WFDProcessor>(params_.wfd, logger_);
@@ -201,39 +201,39 @@ void ROSInterface::addDeadZoneCallback(
     req->pose.header.frame_id);
   res->success = true;
 
+  publishDeadZoneMarkers();
+}
+
+void ROSInterface::publishDeadZoneMarkers()
+{
   visualization_msgs::msg::MarkerArray dead_zone_markers;
 
-  {
-    std::lock_guard<std::mutex> lock(dead_zones_mutex_);
+  std::lock_guard<std::mutex> lock(dead_zones_mutex_);
+  for (size_t i = 0; i < dead_zones_.size(); ++i) {
+    const auto & pose_stamped = dead_zones_[i];
 
-    for (size_t i = 0; i < dead_zones_.size(); ++i) {
-      const auto & pose_stamped = dead_zones_[i];
+    visualization_msgs::msg::Marker marker;
+    marker.header = pose_stamped.header;
+    marker.ns = "dead_zones";
+    marker.id = static_cast<int>(i);
+    marker.type = visualization_msgs::msg::Marker::CYLINDER;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.pose = pose_stamped.pose;
 
-      visualization_msgs::msg::Marker marker;
-      marker.header = pose_stamped.header;
-      marker.ns = "dead_zones";
-      marker.id = static_cast<int>(i);
+    // Small height so it appears as a flat disk.
+    marker.pose.position.z = 0.05;
+    marker.scale.x = 2.0 * params_.dead_zone_min_distance;
+    marker.scale.y = 2.0 * params_.dead_zone_min_distance;
+    marker.scale.z = 0.1;
 
-      marker.type = visualization_msgs::msg::Marker::CYLINDER;
-      marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.color.r = 1.0f;
+    marker.color.g = 0.0f;
+    marker.color.b = 0.0f;
+    marker.color.a = 0.5f;
 
-      marker.pose = pose_stamped.pose;
+    marker.lifetime = rclcpp::Duration::from_seconds(0.0);  // persistent
 
-      // Small height so it appears as a flat disk.
-      marker.pose.position.z = 0.05;
-      marker.scale.x = 2.0 * params_.dead_zone_min_distance;
-      marker.scale.y = 2.0 * params_.dead_zone_min_distance;
-      marker.scale.z = 0.1;
-
-      marker.color.r = 1.0f;
-      marker.color.g = 0.0f;
-      marker.color.b = 0.0f;
-      marker.color.a = 0.5f;
-
-      marker.lifetime = rclcpp::Duration::from_seconds(0.0);  // persistent
-
-      dead_zone_markers.markers.push_back(std::move(marker));
-    }
+    dead_zone_markers.markers.push_back(std::move(marker));
   }
 
   dead_zones_pub_->publish(dead_zone_markers);
@@ -265,32 +265,38 @@ ExplorerParams ROSInterface::loadParams()
 {
   ExplorerParams p;
 
-  p.map_topic        = node_->declare_parameter("map_topic",        p.map_topic);
-  p.robot_frame      = node_->declare_parameter("robot_frame",      p.robot_frame);
-  p.nav2_action      = node_->declare_parameter("nav2_action",      p.nav2_action);
-  p.loop_rate_hz     = node_->declare_parameter("loop_rate_hz",     p.loop_rate_hz);
-  p.map_timeout_s    = node_->declare_parameter("map_timeout_s",    p.map_timeout_s);
-  p.nav_goal_timeout_s = node_->declare_parameter("nav_goal_timeout_s", p.nav_goal_timeout_s);
-  p.tf_timeout_s     = node_->declare_parameter("tf_timeout_s",     p.tf_timeout_s);
-  p.publish_markers  = node_->declare_parameter("publish_markers",  p.publish_markers);
-  p.marker_topic     = node_->declare_parameter("marker_topic",     p.marker_topic);
-  p.send_action      = node_->declare_parameter("send_action",       p.send_action);
-  p.publish_best_frontier = node_->declare_parameter("publish_best_frontier", p.publish_best_frontier);
-  p.best_frontier_topic = node_->declare_parameter("best_frontier_topic", p.best_frontier_topic);
-  p.dead_zone_min_distance = node_->declare_parameter("dead_zone_min_distance", p.dead_zone_min_distance);
-  p.polygon_file           = node_->declare_parameter("polygon_file",           p.polygon_file);
+  // Declare a parameter whose name matches the struct member path, defaulting
+  // to the value already in `p` (e.g. DECLARE_PARAM(wfd.sensor_range)).
+#define DECLARE_PARAM(member) p.member = node_->declare_parameter(#member, p.member)
 
-  p.wfd.free_threshold          = node_->declare_parameter("wfd.free_threshold",          p.wfd.free_threshold);
-  p.wfd.occ_threshold           = node_->declare_parameter("wfd.occ_threshold",           p.wfd.occ_threshold);
-  p.wfd.min_frontier_size       = node_->declare_parameter("wfd.min_frontier_size",       p.wfd.min_frontier_size);
-  p.wfd.min_frontier_dist       = node_->declare_parameter("wfd.min_frontier_dist",       p.wfd.min_frontier_dist);
-  p.wfd.frontier_near_occupancy_distance = node_->declare_parameter("wfd.frontier_near_occupancy_distance", p.wfd.frontier_near_occupancy_distance);
-  p.wfd.sensor_range            = node_->declare_parameter("wfd.sensor_range",            p.wfd.sensor_range);
-  p.wfd.kmeans_max_iter         = node_->declare_parameter("wfd.kmeans_max_iter",         p.wfd.kmeans_max_iter);
-  p.wfd.weights                 = node_->declare_parameter("wfd.weights",                 p.wfd.weights);
-  p.wfd.info_gain_exponent      = node_->declare_parameter("wfd.info_gain_exponent",      p.wfd.info_gain_exponent);
-  p.wfd.min_norm_info_gain      = node_->declare_parameter("wfd.min_norm_info_gain",      p.wfd.min_norm_info_gain);
-  p.wfd.max_norm_occ_deg        = node_->declare_parameter("wfd.max_norm_occ_deg",        p.wfd.max_norm_occ_deg);
+  DECLARE_PARAM(map_topic);
+  DECLARE_PARAM(robot_frame);
+  DECLARE_PARAM(nav2_action);
+  DECLARE_PARAM(loop_rate_hz);
+  DECLARE_PARAM(map_timeout_s);
+  DECLARE_PARAM(nav_goal_timeout_s);
+  DECLARE_PARAM(tf_timeout_s);
+  DECLARE_PARAM(publish_markers);
+  DECLARE_PARAM(marker_topic);
+  DECLARE_PARAM(send_action);
+  DECLARE_PARAM(publish_best_frontier);
+  DECLARE_PARAM(best_frontier_topic);
+  DECLARE_PARAM(dead_zone_min_distance);
+  DECLARE_PARAM(polygon_file);
+
+  DECLARE_PARAM(wfd.free_threshold);
+  DECLARE_PARAM(wfd.occ_threshold);
+  DECLARE_PARAM(wfd.min_frontier_size);
+  DECLARE_PARAM(wfd.min_frontier_dist);
+  DECLARE_PARAM(wfd.frontier_near_occupancy_distance);
+  DECLARE_PARAM(wfd.sensor_range);
+  DECLARE_PARAM(wfd.kmeans_max_iter);
+  DECLARE_PARAM(wfd.weights);
+  DECLARE_PARAM(wfd.info_gain_exponent);
+  DECLARE_PARAM(wfd.min_norm_info_gain);
+  DECLARE_PARAM(wfd.max_norm_occ_deg);
+
+#undef DECLARE_PARAM
 
   return p;
 }
@@ -336,55 +342,6 @@ std::vector<wfd::Pose2D> ROSInterface::getDeadZoneCenters(const std::string & ma
 }
 
 // ============================================================
-//  parseMGRSFile
-// ============================================================
-std::optional<std::vector<std::array<double, 3>>>
-ROSInterface::parseMGRSFile(const std::string & path)
-{
-  std::ifstream file(path);
-  if (!file.is_open()) {
-    logger_.error("Cannot open polygon file '{}'", path);
-    return std::nullopt;
-  }
-
-  std::vector<std::array<double, 3>> ecef_points;
-  std::string line;
-  while (std::getline(file, line)) {
-    line.erase(0, line.find_first_not_of(" \t\r\n"));
-    if (line.empty() || line[0] == '#') continue;
-    line.erase(line.find_last_not_of(" \t\r\n") + 1);
-
-    try {
-      int zone;
-      bool northp;
-      double x, y;
-      int prec;
-      GeographicLib::MGRS::Reverse(line, zone, northp, x, y, prec);
-
-      double lat, lon;
-      GeographicLib::UTMUPS::Reverse(zone, northp, x, y, lat, lon);
-
-      double X, Y, Z;
-      GeographicLib::Geocentric::WGS84().Forward(lat, lon, 0.0, X, Y, Z);
-
-      ecef_points.push_back({X, Y, Z});
-      logger_.info("  MGRS '{}' → lat={:.6f} lon={:.6f} → ECEF ({:.0f}, {:.0f}, {:.0f})",
-        line, lat, lon, X, Y, Z);
-    } catch (const std::exception & e) {
-      logger_.error("Failed to parse MGRS line '{}': {}", line, e.what());
-      return std::nullopt;
-    }
-  }
-
-  if (ecef_points.size() < 3) {
-    logger_.error("Polygon file '{}' has fewer than 3 valid points (got {})", path, ecef_points.size());
-    return std::nullopt;
-  }
-
-  return ecef_points;
-}
-
-// ============================================================
 //  loadPolygonFromFileCallback
 // ============================================================
 void ROSInterface::loadPolygonFromFileCallback(
@@ -401,7 +358,7 @@ void ROSInterface::loadPolygonFromFileCallback(
   }
 
   logger_.info("Loading MGRS polygon from '{}'", path);
-  auto ecef_pts = parseMGRSFile(path);
+  auto ecef_pts = wfd::parseMGRSFile(path, logger_);
 
   if (!ecef_pts) {
     res->success = false;
@@ -456,93 +413,8 @@ std::optional<wfd::Pose2D> ROSInterface::getRobotPosition(const std::string & ma
   }
 }
 
-// ============================================================
-//  navigateTo
-// ============================================================
-// bool ROSInterface::navigateTo(const wfd::Pose2D & goal, const std::string & map_frame)
-// {
-//   if (!nav_client_->wait_for_action_server(2s)) {
-//     logger_.error("Nav2 action server '{}' not available", params_.nav2_action);
-//     return false;
-//   }
-
-//   NavigateToPose::Goal goal_msg;
-//   goal_msg.pose.header.frame_id = map_frame;
-//   goal_msg.pose.header.stamp    = node_->now();
-//   goal_msg.pose.pose.position.x = goal.x;
-//   goal_msg.pose.pose.position.y = goal.y;
-//   goal_msg.pose.pose.position.z = 0.0;
-//   goal_msg.pose.pose.orientation.x = 0.0;  
-//   goal_msg.pose.pose.orientation.y = 0.0;  
-//   goal_msg.pose.pose.orientation.z = 0.0;  
-//   goal_msg.pose.pose.orientation.w = 1.0;  // yaw = 0, nav2 will handle orientation
-
-//   logger_.info("Sending nav goal: ({:.2f}, {:.2f}) in '{}'", goal.x, goal.y, map_frame);
-
-//   auto send_goal_options = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
-
-//   // Feedback callback – log distance remaining periodically
-//   send_goal_options.feedback_callback =
-//     [this](GoalHandleNav::SharedPtr /*gh*/,
-//            const std::shared_ptr<const NavigateToPose::Feedback> feedback)
-//     {
-//       LOG_INFO_THROTTLE(logger_, 2000,
-//         "Nav2 feedback: dist_remaining={:.2f} m",
-//         feedback->distance_remaining);
-//     };
-
-//   std::promise<bool> result_promise;
-//   std::future<bool>  result_future = result_promise.get_future();
-
-//   send_goal_options.result_callback =
-//     [this, &result_promise](const GoalHandleNav::WrappedResult & result)
-//     {
-//       switch (result.code) {
-//         case rclcpp_action::ResultCode::SUCCEEDED:
-//           logger_.info("Nav2 goal SUCCEEDED");
-//           result_promise.set_value(true);
-//           break;
-//         case rclcpp_action::ResultCode::ABORTED:
-//           logger_.warn("Nav2 goal ABORTED");
-//           result_promise.set_value(false);
-//           break;
-//         case rclcpp_action::ResultCode::CANCELED:
-//           logger_.warn("Nav2 goal CANCELED");
-//           result_promise.set_value(false);
-//           break;
-//         default:
-//           logger_.error("Nav2 goal: unknown result code");
-//           result_promise.set_value(false);
-//           break;
-//       }
-//     };
-
-//   auto goal_handle_future = nav_client_->async_send_goal(goal_msg, send_goal_options);
-
-//   // Wait for goal to be accepted
-//   if (goal_handle_future.wait_for(5s) != std::future_status::ready) {
-//     logger_.error("Nav2: goal handle future timed out");
-//     return false;
-//   }
-//   auto goal_handle = goal_handle_future.get();
-//   if (!goal_handle) {
-//     logger_.error("Nav2 rejected the goal");
-//     return false;
-//   }
-
-//   // Wait for result with overall timeout
-//   const auto timeout = std::chrono::duration<double>(params_.nav_goal_timeout_s);
-//   if (result_future.wait_for(timeout) != std::future_status::ready) {
-//     logger_.warn("Nav2 goal timed out after {:.0f} s, cancelling", params_.nav_goal_timeout_s);
-//     nav_client_->async_cancel_goal(goal_handle);
-//     return false;
-//   }
-//   return result_future.get();
-// }
-
 bool ROSInterface::navigateTo(const wfd::Pose2D & goal, const std::string & map_frame)
 {
-  logger_.info("NavigateTo called");  
   if (!nav_client_->wait_for_action_server(2s)) {
     logger_.error("Nav2 action server '{}' not available", params_.nav2_action);
     return false;
@@ -603,22 +475,18 @@ bool ROSInterface::navigateTo(const wfd::Pose2D & goal, const std::string & map_
         // followed by ABORTED).  The promise is already satisfied; ignore.
       }
     };
-  logger_.error("A");
   auto goal_handle_future = nav_client_->async_send_goal(goal_msg, send_goal_options);
 
   // Wait for goal to be accepted
-  logger_.error("B");
   if (goal_handle_future.wait_for(5s) != std::future_status::ready) {
     logger_.error("Nav2: goal handle future timed out");
     return false;
   }
-  logger_.error("C");
   auto goal_handle = goal_handle_future.get();
   if (!goal_handle) {
     logger_.error("Nav2 rejected the goal");
     return false;
   }
-  logger_.error("D");
 
   // Wait for result with overall timeout
   const auto timeout = std::chrono::duration<double>(params_.nav_goal_timeout_s);
@@ -627,7 +495,6 @@ bool ROSInterface::navigateTo(const wfd::Pose2D & goal, const std::string & map_
     nav_client_->async_cancel_goal(goal_handle);
     return false;
   }
-  logger_.error("E");
   return result_future.get();
 }
 
@@ -722,7 +589,109 @@ void ROSInterface::publishFrontierMarkers(
   marker_pub_->publish(ma);
 }
 
+// ============================================================
+//  transformCenterToMap
+// ============================================================
+std::optional<wfd::Pose2D>
+ROSInterface::transformCenterToMap(const std::string & map_frame)
+{
+  if (!exploration_center_.has_value()) return std::nullopt;
+  const auto & center = exploration_center_.value();
 
+  geometry_msgs::msg::PoseStamped center_map;
+  if (center.header.frame_id == map_frame) {
+    center_map = center;
+  } else {
+    try {
+      auto tf = tf_buffer_->lookupTransform(
+        map_frame, center.header.frame_id, tf2::TimePointZero,
+        tf2::durationFromSec(params_.tf_timeout_s));
+      tf2::doTransform(center, center_map, tf);
+    } catch (const tf2::TransformException & ex) {
+      logger_.warn("TF lookup failed: {}", ex.what());
+      return std::nullopt;
+    }
+  }
+
+  wfd::Pose2D pose;
+  pose.x = center_map.pose.position.x;
+  pose.y = center_map.pose.position.y;
+  pose.yaw = 0.0;
+  logger_.info("Exploration center: (x {:.2f}, y {:.2f}, yaw {:.2f}) in '{}'",
+    pose.x, pose.y, pose.yaw, map_frame);
+  return pose;
+}
+
+// ============================================================
+//  transformPolygonToMap
+// ============================================================
+std::optional<std::vector<wfd::Pose2D>>
+ROSInterface::transformPolygonToMap(const std::string & map_frame)
+{
+  // Polygon set via service (PolygonStamped in some frame).
+  if (exploration_polygon_.has_value()) {
+    const auto & polygon = exploration_polygon_.value();
+
+    geometry_msgs::msg::PolygonStamped polygon_map;
+    if (polygon.header.frame_id == map_frame) {
+      polygon_map = polygon;
+    } else {
+      try {
+        auto tf = tf_buffer_->lookupTransform(
+          map_frame, polygon.header.frame_id, tf2::TimePointZero,
+          tf2::durationFromSec(params_.tf_timeout_s));
+        tf2::doTransform(polygon, polygon_map, tf);
+      } catch (const tf2::TransformException & ex) {
+        logger_.warn("TF lookup failed: {}", ex.what());
+        return std::nullopt;
+      }
+    }
+
+    std::vector<wfd::Pose2D> poses;
+    poses.reserve(polygon_map.polygon.points.size());
+    for (const auto & point : polygon_map.polygon.points) {
+      wfd::Pose2D pose;
+      pose.x = point.x;
+      pose.y = point.y;
+      poses.push_back(pose);
+    }
+    logger_.info("Exploration polygon in '{}'", map_frame);
+    return poses;
+  }
+
+  // Polygon loaded from file (stored in ECEF / 'earth' frame). Re-transform each
+  // iteration so improvements in the earth->map TF are picked up automatically.
+  if (polygon_ecef_.has_value()) {
+    try {
+      auto earth_to_map_tf = tf_buffer_->lookupTransform(
+        map_frame, "earth", tf2::TimePointZero,
+        tf2::durationFromSec(params_.tf_timeout_s));
+
+      std::vector<wfd::Pose2D> poses;
+      poses.reserve(polygon_ecef_->size());
+      for (const auto & ecef_pt : polygon_ecef_.value()) {
+        geometry_msgs::msg::PointStamped pt_in, pt_out;
+        pt_in.header.frame_id = "earth";
+        pt_in.point.x = ecef_pt[0];
+        pt_in.point.y = ecef_pt[1];
+        pt_in.point.z = ecef_pt[2];
+        tf2::doTransform(pt_in, pt_out, earth_to_map_tf);
+
+        wfd::Pose2D pose;
+        pose.x = pt_out.point.x;
+        pose.y = pt_out.point.y;
+        poses.push_back(pose);
+      }
+      logger_.info("ECEF polygon ({} pts) transformed to '{}'", poses.size(), map_frame);
+      return poses;
+    } catch (const tf2::TransformException & ex) {
+      logger_.warn("Could not transform ECEF polygon from 'earth' to '{}': {}", map_frame, ex.what());
+      return std::nullopt;
+    }
+  }
+
+  return std::nullopt;
+}
 
 // ============================================================
 //  explorationLoop  (runs in its own thread)
@@ -755,117 +724,12 @@ void ROSInterface::explorationLoop()
 
     const std::string map_frame = map_msg->header.frame_id;
 
-    // Transform the exploration center pose to the map frame.
-    geometry_msgs::msg::PoseStamped exploration_center_map;
-    wfd::Pose2D exploration_center_map_pose;
-    std::optional<wfd::Pose2D> center_pose;
+    // Sleep out the remainder of the loop period on every exit path below.
+    ScopedRateLimiter rate_limiter{loop_start, period_s};
 
-    if (exploration_center_.has_value()) {
-      if (exploration_center_.value().header.frame_id == map_frame) {
-        // already in the correct frame
-        exploration_center_map_pose.x = exploration_center_.value().pose.position.x;
-        exploration_center_map_pose.y = exploration_center_.value().pose.position.y;
-        exploration_center_map_pose.yaw = 0.;
-        center_pose = exploration_center_map_pose;
-
-        logger_.info("Exploration center already in the correct frame '{}': (x {:.2f}, y {:.2f}, yaw {:.2f})",
-            map_frame, center_pose->x, center_pose->y, center_pose->yaw);
-      } else {
-        try { 
-          auto tf = tf_buffer_->lookupTransform(exploration_center_.value().header.frame_id, map_frame,
-            tf2::TimePointZero,
-            tf2::durationFromSec(params_.tf_timeout_s));
-          tf2::doTransform(exploration_center_.value(), exploration_center_map, tf);
-
-          exploration_center_map_pose.x = exploration_center_map.pose.position.x;
-          exploration_center_map_pose.y = exploration_center_map.pose.position.y;
-          exploration_center_map_pose.yaw = 0.;
-          center_pose = exploration_center_map_pose;
-
-          logger_.info("Exploration center: (x {:.2f}, y {:.2f}, yaw {:.2f}) in '{}'",
-            center_pose->x, center_pose->y, center_pose->yaw, map_frame);
-        } catch (const tf2::TransformException & ex) {
-          logger_.warn("TF lookup failed: {}", ex.what());
-        }
-      }
-    }
-
-    // Transform exploration polygon
-    geometry_msgs::msg::PolygonStamped polygon_transformed;
-    std::vector<wfd::Pose2D> polygon_poses_tmp;
-    std::optional<std::vector<wfd::Pose2D>> polygon_poses;
-
-    if (exploration_polygon_.has_value()) {
-      try {
-        if (exploration_polygon_.value().header.frame_id == map_frame) {
-          // already in the correct frame
-
-          for (auto &point : exploration_polygon_.value().polygon.points) {
-            wfd::Pose2D polygon_pose_tmp;
-            polygon_pose_tmp.x = point.x;
-            polygon_pose_tmp.y = point.y;
-            polygon_poses_tmp.push_back(polygon_pose_tmp);
-          }
-          polygon_poses = polygon_poses_tmp;
-
-          logger_.info("Polygon already in the correct frame '{}'",
-              map_frame);
-        } else {
-          try {
-            auto tf = tf_buffer_->lookupTransform(exploration_polygon_.value().header.frame_id, map_frame,
-              tf2::TimePointZero,
-              tf2::durationFromSec(params_.tf_timeout_s));
-
-            tf2::doTransform(exploration_polygon_.value(), polygon_transformed, tf);
-
-            for (auto &point : polygon_transformed.polygon.points) {
-              wfd::Pose2D polygon_pose_tmp;
-              polygon_pose_tmp.x = point.x;
-              polygon_pose_tmp.y = point.y;
-              polygon_poses_tmp.push_back(polygon_pose_tmp);
-            }
-            polygon_poses = polygon_poses_tmp;
-
-            logger_.info("Exploration polygon transformed to '{}'",
-              map_frame);
-          } catch (const tf2::TransformException & ex) {
-            logger_.warn("TF lookup failed: {}", ex.what());
-          }
-        }
-
-      } catch (const tf2::TransformException & ex) {
-        logger_.warn("TF lookup failed: {}", ex.what());
-      }
-    } else if (polygon_ecef_.has_value()) {
-      // Polygon stored in ECEF ('earth' frame) — re-transform each iteration so
-      // that improvements in the earth→map TF are picked up automatically.
-      try {
-        auto earth_to_map_tf = tf_buffer_->lookupTransform(
-          map_frame, "earth", tf2::TimePointZero,
-          tf2::durationFromSec(params_.tf_timeout_s));
-
-        for (const auto & ecef_pt : polygon_ecef_.value()) {
-          geometry_msgs::msg::PointStamped pt_in;
-          pt_in.header.frame_id = "earth";
-          pt_in.point.x = ecef_pt[0];
-          pt_in.point.y = ecef_pt[1];
-          pt_in.point.z = ecef_pt[2];
-
-          geometry_msgs::msg::PointStamped pt_out;
-          tf2::doTransform(pt_in, pt_out, earth_to_map_tf);
-
-          wfd::Pose2D pose;
-          pose.x = pt_out.point.x;
-          pose.y = pt_out.point.y;
-          polygon_poses_tmp.push_back(pose);
-          logger_.warn("POLYGON IN MAP x {}, y {}", pose.x,pose.y);
-        }
-        polygon_poses = polygon_poses_tmp;
-        logger_.info("ECEF polygon ({} pts) transformed to '{}'", polygon_poses_tmp.size(), map_frame);
-      } catch (const tf2::TransformException & ex) {
-        logger_.warn("Could not transform ECEF polygon from 'earth' to '{}': {}", map_frame, ex.what());
-      }
-    }
+    // Transform the exploration center / polygon into the map frame.
+    const std::optional<wfd::Pose2D> center_pose = transformCenterToMap(map_frame);
+    std::optional<std::vector<wfd::Pose2D>> polygon_poses = transformPolygonToMap(map_frame);
 
     // ------------------------------------------------------------------
     // 2. Build thresholded grid
@@ -886,15 +750,10 @@ void ROSInterface::explorationLoop()
     auto robot_pos_opt = getRobotPosition(map_frame);
     if (!robot_pos_opt) {
       logger_.warn("Could not get robot position, skipping iteration");
-      auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_start).count();
-      double sleep_s = period_s - elapsed;
-      if (sleep_s > 0.0) {
-        std::this_thread::sleep_for(std::chrono::duration<double>(sleep_s));
-      }
       continue;
     }
     wfd::Pose2D robot_pos = *robot_pos_opt;
-    
+
     logger_.info("Robot position: (x {:.2f}, y {:.2f}, yaw {:.2f}) in '{}'",
       robot_pos.x, robot_pos.y, robot_pos.yaw, map_frame);
 
@@ -905,11 +764,6 @@ void ROSInterface::explorationLoop()
 
     if (frontiers.empty()) {
       logger_.info("No frontiers detected – exploration may be complete!");
-      auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_start).count();
-      double sleep_s = period_s - elapsed;
-      if (sleep_s > 0.0) {
-        std::this_thread::sleep_for(std::chrono::duration<double>(sleep_s));
-      }
       continue;
     }
 
@@ -920,48 +774,11 @@ void ROSInterface::explorationLoop()
       wfd::remove_frontiers_outside_polygon(polygon_poses.value(), frontiers);
 
     // ------------------------------------------------------------------
-    // 4.6 Filter frontiers inside dead zones.
+    // 4.6 Filter frontiers inside dead zones. (centres require TF, so they are
+    //     resolved here; the geometric filtering itself is non-ROS.)
     // ------------------------------------------------------------------
-    const auto dead_zone_centers = getDeadZoneCenters(map_frame);
-    if (!dead_zone_centers.empty() && !frontiers.empty()) {
-      const double dead_zone_min_distance_sq = params_.dead_zone_min_distance * params_.dead_zone_min_distance;
-      const auto before_count = frontiers.size();
-
-      const auto is_in_dead_zone =
-        [&dead_zone_centers, dead_zone_min_distance_sq](const wfd::Frontier & frontier) {
-          return std::any_of(
-            dead_zone_centers.begin(), dead_zone_centers.end(),
-            [&frontier, dead_zone_min_distance_sq](const wfd::Pose2D & dead_zone) {
-              const double dx = frontier.centroid.x - dead_zone.x;
-              const double dy = frontier.centroid.y - dead_zone.y;
-              return (dx * dx + dy * dy) < dead_zone_min_distance_sq;
-            });
-        };
-
-      // If every frontier falls inside a dead zone, applying the filter would
-      // leave nothing to explore. In that case keep all frontiers this one time
-      // (the dead zones remain stored for later cycles) rather than stalling.
-      const bool all_in_dead_zones =
-        std::all_of(frontiers.begin(), frontiers.end(), is_in_dead_zone);
-
-      if (all_in_dead_zones) {
-        logger_.warn(
-          "Dead-zone filter would remove all {} frontier(s) using {} stored dead zone(s); "
-          "keeping them this cycle (dead zones remain stored)",
-          before_count, dead_zone_centers.size());
-      } else {
-        frontiers.erase(
-          std::remove_if(frontiers.begin(), frontiers.end(), is_in_dead_zone),
-          frontiers.end());
-
-        const auto removed_count = before_count - frontiers.size();
-        if (removed_count > 0) {
-          logger_.info(
-            "Dead-zone filter removed {} frontier(s) using {} stored dead zone(s)",
-            removed_count, dead_zone_centers.size());
-        }
-      }
-    }
+    wfd::filter_frontiers_in_dead_zones(
+      frontiers, getDeadZoneCenters(map_frame), params_.dead_zone_min_distance, logger_);
 
     // ------------------------------------------------------------------
     // 5. Select best frontier
@@ -971,11 +788,6 @@ void ROSInterface::explorationLoop()
 
     if (!best) {
       logger_.warn("Could not select best frontier");
-      auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_start).count();
-      double sleep_s = period_s - elapsed;
-      if (sleep_s > 0.0) {
-        std::this_thread::sleep_for(std::chrono::duration<double>(sleep_s));
-      }
       continue;
     }
 
@@ -1002,14 +814,7 @@ void ROSInterface::explorationLoop()
       best_frontier_pub_->publish(best_frontier_pose);
     }
 
-    // ------------------------------------------------------------------
-    // 8. Rate limiting (respects time already spent)
-    // ------------------------------------------------------------------
-    auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_start).count();
-    double sleep_s = period_s - elapsed;
-    if (sleep_s > 0.0) {
-      std::this_thread::sleep_for(std::chrono::duration<double>(sleep_s));
-    }
+    // Rate limiting happens in ~ScopedRateLimiter (respects time already spent).
   }
 
   logger_.info("Exploration loop finished");

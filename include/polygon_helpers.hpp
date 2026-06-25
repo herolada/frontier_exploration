@@ -1,5 +1,6 @@
 #include <vector>
 #include "wfd_types.hpp"
+#include "abstract_logger.hpp"
 #include <algorithm>
 
 namespace wfd
@@ -7,6 +8,7 @@ namespace wfd
 // Function to check if a point is inside a polygon using
 // the ray-casting algorithm
 // https://www.geeksforgeeks.org/cpp/point-in-polygon-in-cpp/
+
 bool isPointInPolygon(const std::vector<Pose2D>& polygon,
                       const Pose2D& point)
 {
@@ -56,6 +58,52 @@ void remove_frontiers_outside_polygon(std::vector<wfd::Pose2D> &polygon, std::ve
             }),
         frontiers.end()
     );
+}
+
+// Remove frontiers whose centroid lies within `min_distance` of any dead-zone
+// centre. If every frontier falls inside a dead zone, applying the filter would
+// leave nothing to explore, so in that case the frontiers are kept this cycle
+// (the dead zones remain stored for later iterations) rather than stalling.
+inline void filter_frontiers_in_dead_zones(
+    std::vector<Frontier> &frontiers,
+    const std::vector<Pose2D> &dead_zone_centers,
+    double min_distance,
+    AbstractLogger &logger)
+{
+    if (dead_zone_centers.empty() || frontiers.empty()) return;
+
+    const double min_distance_sq = min_distance * min_distance;
+    const auto before_count = frontiers.size();
+
+    const auto is_in_dead_zone =
+        [&dead_zone_centers, min_distance_sq](const Frontier &frontier) {
+            return std::any_of(
+                dead_zone_centers.begin(), dead_zone_centers.end(),
+                [&frontier, min_distance_sq](const Pose2D &dead_zone) {
+                    const double dx = frontier.centroid.x - dead_zone.x;
+                    const double dy = frontier.centroid.y - dead_zone.y;
+                    return (dx * dx + dy * dy) < min_distance_sq;
+                });
+        };
+
+    if (std::all_of(frontiers.begin(), frontiers.end(), is_in_dead_zone)) {
+        logger.warn(
+            "Dead-zone filter would remove all {} frontier(s) using {} stored dead zone(s); "
+            "keeping them this cycle (dead zones remain stored)",
+            before_count, dead_zone_centers.size());
+        return;
+    }
+
+    frontiers.erase(
+        std::remove_if(frontiers.begin(), frontiers.end(), is_in_dead_zone),
+        frontiers.end());
+
+    const auto removed_count = before_count - frontiers.size();
+    if (removed_count > 0) {
+        logger.info(
+            "Dead-zone filter removed {} frontier(s) using {} stored dead zone(s)",
+            removed_count, dead_zone_centers.size());
+    }
 }
 
 }

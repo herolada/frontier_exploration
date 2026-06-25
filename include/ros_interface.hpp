@@ -92,7 +92,7 @@ private:
   // -----------------------------------------------------------------------
 
   void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
-  
+
   void setExplorationCenterCallback(
     const std::shared_ptr<srv::SetPose::Request> req,
     std::shared_ptr<srv::SetPose::Response> res);
@@ -136,6 +136,16 @@ private:
   /** Get robot position in the map frame. Returns nullopt on failure. */
   std::optional<wfd::Pose2D> getRobotPosition(const std::string & map_frame);
 
+  /** Transform the stored exploration center into @p map_frame (nullopt if unset/TF fails). */
+  std::optional<wfd::Pose2D> transformCenterToMap(const std::string & map_frame);
+
+  /**
+   * Transform the active exploration polygon (either the PolygonStamped set via
+   * service or the ECEF polygon loaded from file) into @p map_frame.
+   * Returns nullopt when no polygon is active or the TF lookup fails.
+   */
+  std::optional<std::vector<wfd::Pose2D>> transformPolygonToMap(const std::string & map_frame);
+
   // -----------------------------------------------------------------------
   // Visualisation
   // -----------------------------------------------------------------------
@@ -145,11 +155,30 @@ private:
     const std::optional<wfd::Frontier> & best,
     const std::string & frame_id);
 
+  /** Rebuild and publish the dead-zone markers from the current dead_zones_. */
+  void publishDeadZoneMarkers();
+
   // -----------------------------------------------------------------------
   // Parameter loading
   // -----------------------------------------------------------------------
 
   ExplorerParams loadParams();
+
+  // -----------------------------------------------------------------------
+  // Service registration helper
+  // -----------------------------------------------------------------------
+
+  /** Create a service bound to a member callback taking (Request, Response). */
+  template <typename Srv>
+  typename rclcpp::Service<Srv>::SharedPtr createService(
+    const std::string & name,
+    void (ROSInterface::*cb)(const std::shared_ptr<typename Srv::Request>,
+                             std::shared_ptr<typename Srv::Response>))
+  {
+    return node_->create_service<Srv>(
+      name,
+      std::bind(cb, this, std::placeholders::_1, std::placeholders::_2));
+  }
 
   // -----------------------------------------------------------------------
   // Members
@@ -191,9 +220,6 @@ private:
   // Mutually exclusive with exploration_polygon_: whichever was set last is active.
   rclcpp::Service<frontier_exploration::srv::LoadPolygonFromFile>::SharedPtr load_polygon_from_file_server_;
   std::optional<std::vector<std::array<double, 3>>> polygon_ecef_;
-
-  // Parse MGRS polygon file; returns ECEF points or nullopt on error.
-  std::optional<std::vector<std::array<double, 3>>> parseMGRSFile(const std::string & path);
 
   // Dead-zone service
   rclcpp::Service<frontier_exploration::srv::AddDeadZone>::SharedPtr add_dead_zone_server_;
