@@ -68,7 +68,7 @@ double approximateInfoGain(
                     logger->error("Adame mas tam chybu {}.", vi);
                 }
 
-                CellState s = grid.at(x, y);
+                CellState s = grid.atUnexploredOOB(x, y);
                 if (s == CellState::OBSTACLE) {
                     visitable += ax + 1 - i;
                     break;
@@ -98,7 +98,7 @@ double approximateInfoGain(
                     logger->error("Adame mas tam chybu {}.", vi);
                 }
 
-                CellState s = grid.at(x, y);
+                CellState s = grid.atUnexploredOOB(x, y);
                 if (s == CellState::OBSTACLE) {
                     visitable += ay + 1 - i;
                     break;

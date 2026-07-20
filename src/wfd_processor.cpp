@@ -76,9 +76,9 @@ OccupancyGrid WFDProcessor::buildGrid(
 // ============================================================
 bool WFDProcessor::isFrontierCell(const OccupancyGrid & grid, int col, int row) const
 {
-  if (grid.at(col, row) != CellState::TRAVERSABLE) return false;
+  if (grid.atUnexploredOOB(col, row) != CellState::TRAVERSABLE) return false;
   for (int d = 0; d < 8; ++d) {
-    if (grid.at(col + kDx8[d], row + kDy8[d]) == CellState::UNEXPLORED) return true;
+    if (grid.atUnexploredOOB(col + kDx8[d], row + kDy8[d]) == CellState::UNEXPLORED) return true;
   }
   return false;
 }

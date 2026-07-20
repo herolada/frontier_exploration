@@ -60,6 +60,17 @@ struct OccupancyGrid
     return cells[static_cast<size_t>(index(col, row))];
   }
 
+  // Like at(), but treats out-of-bounds cells as UNEXPLORED rather than
+  // OBSTACLE. Used where the grid boundary should not be mistaken for a
+  // wall (e.g. frontier detection, information-gain raycasting).
+  CellState atUnexploredOOB(int col, int row) const
+  {
+    if (col < 0 || col >= width || row < 0 || row >= height) {
+      return CellState::UNEXPLORED;
+    }
+    return cells[static_cast<size_t>(index(col, row))];
+  }
+
   Pose2D cellToWorld(int col, int row) const
   {
     return {origin_x + (col + 0.5) * resolution,
