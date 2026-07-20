@@ -181,7 +181,8 @@ private:
   void publishFrontierMarkers(
     const std::vector<wfd::Frontier> & frontiers,
     const std::optional<wfd::Frontier> & best,
-    const std::string & frame_id);
+    const std::string & frame_id,
+    const rclcpp::Time & map_ts);
 
   /** Rebuild and publish the dead-zone markers from the current dead_zones_. */
   void publishDeadZoneMarkers();

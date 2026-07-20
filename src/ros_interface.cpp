@@ -529,7 +529,8 @@ bool ROSInterface::navigateTo(const wfd::Pose2D & goal, const std::string & map_
 void ROSInterface::publishFrontierMarkers(
   const std::vector<wfd::Frontier> & frontiers,
   const std::optional<wfd::Frontier> & best,
-  const std::string & frame_id)
+  const std::string & frame_id,
+  const rclcpp::Time & map_ts)
 {
   if (!marker_pub_) return;
 
@@ -539,7 +540,7 @@ void ROSInterface::publishFrontierMarkers(
   visualization_msgs::msg::Marker del;
   del.action = visualization_msgs::msg::Marker::DELETEALL;
   del.header.frame_id = frame_id;
-  del.header.stamp    = node_->now();
+  del.header.stamp    = map_ts;
   ma.markers.push_back(del);
 
   // Compute score range for marker scaling
@@ -568,7 +569,7 @@ void ROSInterface::publishFrontierMarkers(
     // Sphere at centroid
     visualization_msgs::msg::Marker m;
     m.header.frame_id = frame_id;
-    m.header.stamp    = node_->now();
+    m.header.stamp    = map_ts;
     m.ns              = "frontier_centroids";
     m.id              = id++;
     m.type            = visualization_msgs::msg::Marker::SPHERE;
@@ -723,6 +724,7 @@ std::optional<wfd::Frontier> ROSInterface::computeBestFrontier(
 {
   if (!map_msg) return std::nullopt;
   const std::string map_frame = map_msg->header.frame_id;
+  const rclcpp::Time map_ts = map_msg->header.stamp;
 
   // The WFD processor is stateful / not thread-safe, so only one thread may run
   // this core at a time (loop vs. explore_once service).
@@ -774,7 +776,7 @@ std::optional<wfd::Frontier> ROSInterface::computeBestFrontier(
   }
 
   if (publish_markers) {
-    publishFrontierMarkers(frontiers, best, map_frame);
+    publishFrontierMarkers(frontiers, best, map_frame, map_ts);
   }
 
   return best;
